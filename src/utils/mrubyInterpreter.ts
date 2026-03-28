@@ -2619,11 +2619,8 @@ class MrubyInterpreter {
           const line = this.inputLines.shift()!;
           return line + '\n';
         }
-        // Fallback to window.prompt when no pre-typed input is available
-        if (typeof window !== 'undefined' && typeof window.prompt === 'function') {
-          const input = window.prompt('stdin> ') ?? '';
-          return input + '\n';
-        }
+        // No pre-typed input available; return null (EOF) instead of blocking with a modal dialog.
+        // Users should pre-type stdin values in the console input field before running.
         return null;
       }
     }
