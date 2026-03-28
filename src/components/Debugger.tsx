@@ -155,6 +155,7 @@ export const Debugger: React.FC = () => {
                     <button
                       className="flex-shrink-0 text-slate-600 hover:text-slate-400 ml-1"
                       title="Edit variable"
+                      aria-label={`Edit variable ${name}`}
                       onClick={() => startEdit(name, variable.value)}
                     >
                       ✎
