@@ -16,6 +16,10 @@ interface AppStore extends EditorState {
   addConsoleEntry: (entry: Omit<ConsoleEntry, 'id' | 'timestamp'>) => void;
   clearConsole: () => void;
 
+  consoleInputLines: string[];
+  addConsoleInputLine: (line: string) => void;
+  clearConsoleInputLines: () => void;
+
   debuggerState: DebuggerState;
   toggleBreakpoint: (line: number) => void;
   startDebug: (code: string) => Promise<void>;
@@ -43,7 +47,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const startTime = performance.now();
 
     try {
-      const result = interpretMruby(code);
+      const result = interpretMruby(code, get().consoleInputLines);
       const executionTime = performance.now() - startTime;
 
       if (result.error) {
@@ -119,6 +123,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   clearConsole: () => set({ consoleEntries: [] }),
 
+  consoleInputLines: [],
+
+  addConsoleInputLine: (line) => {
+    set((state) => ({
+      consoleInputLines: [...state.consoleInputLines, line]
+    }));
+  },
+
+  clearConsoleInputLines: () => set({ consoleInputLines: [] }),
+
   debuggerState: {
     isRunning: false,
     isPaused: false,
@@ -171,7 +185,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }));
 
     try {
-      const { result, trace } = interpretMrubyDebug(code);
+      const { result, trace } = interpretMrubyDebug(code, get().consoleInputLines);
       const breakpoints = get().debuggerState.breakpoints;
 
       // Find first breakpoint in trace, or start at index 0
