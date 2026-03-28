@@ -1654,8 +1654,18 @@ class MrubyInterpreter {
         case 'finite?': return isFinite(obj);
         case 'infinite?': return obj === Infinity ? 1 : obj === -Infinity ? -1 : null;
         case 'nan?': return isNaN(obj);
-        case 'round': return args[0] !== undefined ? parseFloat(obj.toFixed(typeof args[0] === 'number' ? args[0] : parseInt(String(args[0])))) : Math.round(obj);
-        case 'floor': return args[0] !== undefined ? parseFloat(obj.toFixed(typeof args[0] === 'number' ? args[0] : parseInt(String(args[0])))).valueOf() <= obj ? parseFloat(obj.toFixed(typeof args[0] === 'number' ? args[0] : parseInt(String(args[0])))) : parseFloat(obj.toFixed(typeof args[0] === 'number' ? args[0] : parseInt(String(args[0])))) - Math.pow(10, -(typeof args[0] === 'number' ? args[0] : parseInt(String(args[0])))) : Math.floor(obj);
+        case 'round': {
+          const prec = args[0] !== undefined ? (typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]))) : null;
+          return prec !== null ? parseFloat(obj.toFixed(prec)) : Math.round(obj);
+        }
+        case 'floor': {
+          if (args[0] !== undefined) {
+            const prec = typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]));
+            const factor = Math.pow(10, prec);
+            return Math.floor(obj * factor) / factor;
+          }
+          return Math.floor(obj);
+        }
         case 'ceil': return Math.ceil(obj);
         case 'truncate': return Math.trunc(obj);
         case 'divmod': {
@@ -2614,7 +2624,7 @@ class MrubyInterpreter {
           const input = window.prompt('stdin> ') ?? '';
           return input + '\n';
         }
-        return '';
+        return null;
       }
     }
 
