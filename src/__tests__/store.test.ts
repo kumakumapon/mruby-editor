@@ -18,7 +18,9 @@ describe('useAppStore', () => {
         breakpoints: new Map(),
         callStack: [],
         variables: new Map(),
-        stepMode: null
+        stepMode: null,
+        trace: [],
+        traceIndex: -1
       }
     });
   });

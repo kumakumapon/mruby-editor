@@ -3,14 +3,32 @@ import { CodeEditor } from '@/components/Editor';
 import { Console } from '@/components/Console';
 import { Debugger } from '@/components/Debugger';
 import { useAppStore } from '@/store/useAppStore';
-import { Play, RotateCcw } from 'lucide-react';
+import { Play, RotateCcw, Bug, Square } from 'lucide-react';
 
 export const App: React.FC = () => {
-  const { code, executeCode, isExecuting, clearOutput, clearConsole, lastResult } = useAppStore();
+  const {
+    code,
+    executeCode,
+    isExecuting,
+    clearOutput,
+    clearConsole,
+    lastResult,
+    debuggerState,
+    startDebug,
+    stopDebug
+  } = useAppStore();
 
   const handleRun = useCallback(() => {
     executeCode(code);
   }, [code, executeCode]);
+
+  const handleDebug = useCallback(() => {
+    if (debuggerState.isRunning) {
+      stopDebug();
+    } else {
+      startDebug(code);
+    }
+  }, [code, debuggerState.isRunning, startDebug, stopDebug]);
 
   const handleClear = useCallback(() => {
     clearOutput();
@@ -33,11 +51,33 @@ export const App: React.FC = () => {
           <div className="flex gap-3">
             <button
               onClick={handleRun}
-              disabled={isExecuting}
-              className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-green-900 rounded font-semibold transition-colors"
+              disabled={isExecuting || debuggerState.isRunning}
+              className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-green-900 disabled:opacity-50 rounded font-semibold transition-colors"
             >
               <Play className="w-4 h-4" />
               Run
+            </button>
+
+            <button
+              onClick={handleDebug}
+              disabled={isExecuting && !debuggerState.isRunning}
+              className={`flex items-center gap-2 px-4 py-2 rounded font-semibold transition-colors ${
+                debuggerState.isRunning
+                  ? 'bg-red-600 hover:bg-red-700'
+                  : 'bg-yellow-600 hover:bg-yellow-700 disabled:bg-yellow-900 disabled:opacity-50'
+              }`}
+            >
+              {debuggerState.isRunning ? (
+                <>
+                  <Square className="w-4 h-4" />
+                  Stop Debug
+                </>
+              ) : (
+                <>
+                  <Bug className="w-4 h-4" />
+                  Debug
+                </>
+              )}
             </button>
 
             <button
@@ -50,14 +90,20 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        {isExecuting && (
+        {isExecuting && !debuggerState.isRunning && (
           <div className="mt-3 flex items-center gap-2 text-sm text-yellow-400">
             <div className="animate-spin">⟳</div>
             Executing...
           </div>
         )}
 
-        {lastResult && !isExecuting && (
+        {debuggerState.isPaused && (
+          <div className="mt-3 flex items-center gap-2 text-sm text-yellow-400">
+            ⏸ Debug paused at line {debuggerState.currentLine}
+          </div>
+        )}
+
+        {lastResult && !isExecuting && !debuggerState.isPaused && (
           <div
             className={`mt-3 text-sm ${
               lastResult.success ? 'text-green-400' : 'text-red-400'

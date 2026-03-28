@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { interpretMruby } from '@/utils/mrubyInterpreter';
+import { interpretMruby, interpretMrubyDebug } from '@/utils/mrubyInterpreter';
 
 describe('interpretMruby', () => {
   it('should handle puts', () => {
@@ -113,5 +113,95 @@ describe('interpretMruby', () => {
   it('should handle upto', () => {
     const result = interpretMruby('1.upto(3) { |i| puts i }');
     expect(result.output).toBe('1\n2\n3\n');
+  });
+
+  it('should handle basic class with initialize and instance variables', () => {
+    const code = `class Dog
+  def initialize(name)
+    @name = name
+  end
+  def speak
+    puts "#{@name} says Woof!"
+  end
+end
+dog = Dog.new("Rex")
+dog.speak`;
+    const result = interpretMruby(code);
+    expect(result.error).toBeUndefined();
+    expect(result.output).toBe('Rex says Woof!\n');
+  });
+
+  it('should handle class with multiple instance variables', () => {
+    const code = `class Person
+  def initialize(name, age)
+    @name = name
+    @age = age
+  end
+  def info
+    puts "#{@name} is #{@age} years old"
+  end
+end
+person = Person.new("Alice", 30)
+person.info`;
+    const result = interpretMruby(code);
+    expect(result.error).toBeUndefined();
+    expect(result.output).toBe('Alice is 30 years old\n');
+  });
+
+  it('should handle class inheritance', () => {
+    const code = `class Animal
+  def initialize(name)
+    @name = name
+  end
+  def name
+    @name
+  end
+end
+class Cat < Animal
+  def speak
+    puts "#{@name} says Meow!"
+  end
+end
+cat = Cat.new("Whiskers")
+cat.speak`;
+    const result = interpretMruby(code);
+    expect(result.error).toBeUndefined();
+    expect(result.output).toBe('Whiskers says Meow!\n');
+  });
+
+  it('should handle class method returning value', () => {
+    const code = `class Calculator
+  def add(a, b)
+    a + b
+  end
+end
+calc = Calculator.new
+result = calc.add(3, 4)
+puts result`;
+    const result = interpretMruby(code);
+    expect(result.error).toBeUndefined();
+    expect(result.output).toBe('7\n');
+  });
+
+  it('should produce debug trace with line numbers', () => {
+    const code = `x = 1\ny = 2\nputs x + y`;
+    const { result, trace } = interpretMrubyDebug(code);
+    expect(result.error).toBeUndefined();
+    expect(result.output).toBe('3\n');
+    expect(trace.length).toBeGreaterThan(0);
+    // Trace should contain line numbers
+    const lines = trace.map(e => e.line);
+    expect(lines).toContain(1);
+    expect(lines).toContain(2);
+    expect(lines).toContain(3);
+  });
+
+  it('should include variables in debug trace', () => {
+    const code = `x = 42\nputs x`;
+    const { trace } = interpretMrubyDebug(code);
+    // After line 1 (x = 42), x should be in variables
+    const afterAssign = trace.find(e => e.line === 2);
+    expect(afterAssign).toBeDefined();
+    expect(afterAssign?.vars['x']).toBe('42');
   });
 });
