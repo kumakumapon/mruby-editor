@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import { EditorState, ExecutionResult, DebuggerState, ConsoleEntry, TraceEvent, Variable } from '@/types';
 import { interpretMruby, interpretMrubyDebug } from '@/utils/mrubyInterpreter';
+import { storage } from '@/utils/storage';
+
+let consoleEntryCounter = 0;
 
 interface AppStore extends EditorState {
   setCode: (code: string) => void;
@@ -31,12 +34,15 @@ interface AppStore extends EditorState {
 }
 
 export const useAppStore = create<AppStore>((set, get) => ({
-  code: `# mruby コード例\nputs "Hello, mruby!"`,
+  code: storage.loadCode(),
   language: 'ruby',
   theme: 'vs-dark',
   fontSize: 14,
 
-  setCode: (code) => set({ code }),
+  setCode: (code) => {
+    storage.saveCode(code);
+    set({ code });
+  },
   setTheme: (theme) => set({ theme }),
   setFontSize: (fontSize) => set({ fontSize }),
 
@@ -115,7 +121,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         ...state.consoleEntries,
         {
           ...entry,
-          id: `console-${Date.now()}`,
+          id: `console-${++consoleEntryCounter}`,
           timestamp: new Date()
         }
       ]
@@ -182,7 +188,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         variables: new Map(),
         callStack: []
       },
-      isExecuting: true
+      isExecuting: true,
+      consoleEntries: [],
+      lastResult: null
     }));
 
     try {
