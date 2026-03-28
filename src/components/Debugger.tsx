@@ -72,7 +72,7 @@ export const Debugger: React.FC = () => {
           <div className="px-2 py-1 text-xs text-slate-400">
             {breakpoints.size === 0 ? (
               <div className="text-slate-500 px-2 py-1">
-                クリックして行番号にブレークポイントを設定
+                Click line numbers to set breakpoints
               </div>
             ) : (
               Array.from(breakpoints.values()).map((bp) => (

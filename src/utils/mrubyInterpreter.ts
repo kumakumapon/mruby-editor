@@ -255,7 +255,7 @@ class MrubyInterpreter {
         continue;
       }
       // Only treat 'p' as a function call when followed by space/( and not an assignment
-      if (/^p(\s+|\()/.test(line) && !/^p\s*[+\-*\/%]?=/.test(line)) {
+      if (/^p(\s+|\()/.test(line) && !/^p\s*[+*/%=-]?=/.test(line)) {
         this.executeP(line);
         lastValue = null;
         i++;

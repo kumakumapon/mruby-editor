@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { EditorState, ExecutionResult, DebuggerState, ConsoleEntry, TraceEvent } from '@/types';
+import { EditorState, ExecutionResult, DebuggerState, ConsoleEntry, TraceEvent, Variable } from '@/types';
 import { interpretMruby, interpretMrubyDebug } from '@/utils/mrubyInterpreter';
 
 interface AppStore extends EditorState {
@@ -397,8 +397,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   }
 }));
 
-function buildVariableMap(event: TraceEvent): Map<string, import('@/types').Variable> {
-  const vars = new Map<string, import('@/types').Variable>();
+function buildVariableMap(event: TraceEvent): Map<string, Variable> {
+  const vars = new Map<string, Variable>();
   for (const [name, value] of Object.entries(event.vars)) {
     vars.set(name, {
       name,
