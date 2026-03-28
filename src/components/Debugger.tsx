@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 
 export const Debugger: React.FC = () => {
@@ -8,12 +8,30 @@ export const Debugger: React.FC = () => {
     stepInto,
     stepOver,
     continueDebug,
-    stopDebug
+    stopDebug,
+    updateDebugVariable
   } = useAppStore();
   const { breakpoints, variables, callStack, currentLine, isPaused, isRunning, trace, traceIndex } = debuggerState;
 
+  const [editingVar, setEditingVar] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
+
   const isAtEnd = traceIndex >= trace.length - 1;
   const canStep = isPaused && trace.length > 0 && !isAtEnd;
+
+  const startEdit = (name: string, currentValue: string) => {
+    setEditingVar(name);
+    setEditValue(currentValue);
+  };
+
+  const commitEdit = (name: string) => {
+    updateDebugVariable(name, editValue);
+    setEditingVar(null);
+  };
+
+  const cancelEdit = () => {
+    setEditingVar(null);
+  };
 
   return (
     <div className="debugger-panel flex flex-col h-full bg-slate-900 text-slate-100 text-sm border-t border-slate-700">
@@ -108,15 +126,50 @@ export const Debugger: React.FC = () => {
               Array.from(variables.entries()).map(([name, variable]) => (
                 <div
                   key={name}
-                  className="px-2 py-1 hover:bg-slate-800 rounded text-xs"
+                  className="px-2 py-1 hover:bg-slate-800 rounded text-xs flex items-center gap-1"
                 >
-                  <span className="text-cyan-400">{name}</span>
-                  <span className="text-slate-500">: </span>
-                  <span className="text-slate-300">{variable.value}</span>
+                  <span className="text-cyan-400 flex-shrink-0">{name}</span>
+                  <span className="text-slate-500 flex-shrink-0">: </span>
+                  {editingVar === name ? (
+                    <input
+                      className="flex-1 bg-slate-700 text-slate-100 border border-blue-500 rounded px-1 py-0.5 text-xs min-w-0 outline-none"
+                      value={editValue}
+                      autoFocus
+                      onChange={(e) => setEditValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') commitEdit(name);
+                        if (e.key === 'Escape') cancelEdit();
+                      }}
+                      onBlur={() => commitEdit(name)}
+                    />
+                  ) : (
+                    <span
+                      className="text-slate-300 cursor-pointer hover:text-white hover:underline truncate"
+                      title="Double-click to edit"
+                      onDoubleClick={() => startEdit(name, variable.value)}
+                    >
+                      {variable.value}
+                    </span>
+                  )}
+                  {editingVar !== name && (
+                    <button
+                      className="flex-shrink-0 text-slate-600 hover:text-slate-400 ml-1"
+                      title="Edit variable"
+                      aria-label={`Edit variable ${name}`}
+                      onClick={() => startEdit(name, variable.value)}
+                    >
+                      ✎
+                    </button>
+                  )}
                 </div>
               ))
             )}
           </div>
+          {variables.size > 0 && (
+            <div className="px-4 pb-2 text-xs text-slate-600">
+              Double-click or click ✎ to edit a variable value
+            </div>
+          )}
         </section>
 
         <section>

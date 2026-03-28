@@ -37,6 +37,7 @@ interface MrubyMethod {
   body: string[];
   bodyLineBase: number; // 0-based index of first body line in original source
   closure: Environment;
+  ownerClassName?: string; // class that owns this method (for super support)
 }
 
 interface MrubyClassDef {
@@ -108,6 +109,7 @@ class MrubyInterpreter {
   private maxIterations = 10000;
   private iterationCount = 0;
   private inputLines: string[];
+  private currentMethodStack: Array<{ className: string; methodName: string }> = [];
 
   // Debug trace support
   private debugMode = false;
@@ -236,9 +238,38 @@ class MrubyInterpreter {
         continue;
       }
 
+      if (/^case\b/.test(line)) {
+        i = this.executeCase(lines, i, end, lineNumBase + (i - start));
+        continue;
+      }
+
+      if (/^loop\s*(do)?\s*$/.test(line)) {
+        i = this.executeLoop(lines, i, end, lineNumBase + (i - start));
+        continue;
+      }
+
       if (/^raise\s+/.test(line)) {
         const msg = this.evalExpression(line.replace(/^raise\s+/, '').trim());
         throw new RubyException(String(msg));
+      }
+
+      if (line === 'break') throw new BreakException();
+      if (line === 'next') throw new NextException();
+      if (/^break\s+if\s+/.test(line)) {
+        if (this.isTruthy(this.evalExpression(line.slice(9).trim()))) throw new BreakException();
+        i++; continue;
+      }
+      if (/^break\s+unless\s+/.test(line)) {
+        if (!this.isTruthy(this.evalExpression(line.slice(12).trim()))) throw new BreakException();
+        i++; continue;
+      }
+      if (/^next\s+if\s+/.test(line)) {
+        if (this.isTruthy(this.evalExpression(line.slice(8).trim()))) throw new NextException();
+        i++; continue;
+      }
+      if (/^next\s+unless\s+/.test(line)) {
+        if (!this.isTruthy(this.evalExpression(line.slice(11).trim()))) throw new NextException();
+        i++; continue;
       }
 
       if (/^return(\s+|$)/.test(line)) {
@@ -340,6 +371,8 @@ class MrubyInterpreter {
       } else if (/^def\s+/.test(l) && depth === 1) {
         i = this.defineClassMethod(lines, i, origIdx + (i - start), classDef);
         continue;
+      } else if (/^attr_(accessor|reader|writer)\b/.test(l) && depth === 1) {
+        this.generateAttrMethods(l, classDef);
       } else if (/^end\b/.test(l)) {
         depth--;
         if (depth === 0) break;
@@ -384,7 +417,8 @@ class MrubyInterpreter {
       params,
       body,
       bodyLineBase,
-      closure: this.env
+      closure: this.env,
+      ownerClassName: classDef.name
     };
 
     classDef.methods.set(fullName, method);
@@ -421,6 +455,7 @@ class MrubyInterpreter {
     this.env = methodEnv;
     this.currentSelf = instance;
     this.callStackNames.push(`${instance.className}#${method.name}`);
+    this.currentMethodStack.push({ className: method.ownerClassName ?? instance.className, methodName: method.name });
 
     let result: MrubyValue = null;
 
@@ -430,6 +465,7 @@ class MrubyInterpreter {
       if (e instanceof ReturnException) {
         result = e.value;
       } else {
+        this.currentMethodStack.pop();
         this.callStackNames.pop();
         this.env = savedEnv;
         this.currentSelf = savedSelf;
@@ -437,6 +473,7 @@ class MrubyInterpreter {
       }
     }
 
+    this.currentMethodStack.pop();
     this.callStackNames.pop();
     this.env = savedEnv;
     this.currentSelf = savedSelf;
@@ -595,9 +632,11 @@ class MrubyInterpreter {
   private executeBeginRescue(lines: string[], start: number, end: number, startOrig: number = start): number {
     const beginBody: string[] = [];
     const rescueBody: string[] = [];
-    let inRescue = false;
+    const ensureBody: string[] = [];
+    let section: 'begin' | 'rescue' | 'ensure' = 'begin';
     let beginBodyLineBase = -1;
     let rescueBodyLineBase = -1;
+    let ensureBodyLineBase = -1;
     let depth = 1;
     let i = start + 1;
 
@@ -609,11 +648,19 @@ class MrubyInterpreter {
         if (depth === 0) break;
       }
       if (depth === 1 && /^rescue\b/.test(l)) {
-        inRescue = true;
+        section = 'rescue';
         i++;
         continue;
       }
-      if (inRescue) {
+      if (depth === 1 && /^ensure\b/.test(l)) {
+        section = 'ensure';
+        i++;
+        continue;
+      }
+      if (section === 'ensure') {
+        if (ensureBodyLineBase < 0 && l) ensureBodyLineBase = startOrig + (i - start);
+        ensureBody.push(lines[i]);
+      } else if (section === 'rescue') {
         if (rescueBodyLineBase < 0 && l) rescueBodyLineBase = startOrig + (i - start);
         rescueBody.push(lines[i]);
       } else {
@@ -623,20 +670,234 @@ class MrubyInterpreter {
       i++;
     }
 
+    let caught = false;
     try {
       this.executeBlock(beginBody, 0, beginBody.length, beginBodyLineBase >= 0 ? beginBodyLineBase : 0);
     } catch (e) {
+      caught = true;
       if (rescueBody.length > 0) {
         if (e instanceof RubyException) {
           this.env.set('$!', e.message);
         }
         this.executeBlock(rescueBody, 0, rescueBody.length, rescueBodyLineBase >= 0 ? rescueBodyLineBase : 0);
+        // ensure always runs after rescue
+        if (ensureBody.length > 0) {
+          this.executeBlock(ensureBody, 0, ensureBody.length, ensureBodyLineBase >= 0 ? ensureBodyLineBase : 0);
+        }
       } else {
+        // No rescue - run ensure then re-throw
+        if (ensureBody.length > 0) {
+          this.executeBlock(ensureBody, 0, ensureBody.length, ensureBodyLineBase >= 0 ? ensureBodyLineBase : 0);
+        }
+        throw e;
+      }
+    }
+    if (!caught && ensureBody.length > 0) {
+      this.executeBlock(ensureBody, 0, ensureBody.length, ensureBodyLineBase >= 0 ? ensureBodyLineBase : 0);
+    }
+
+    return i + 1;
+  }
+
+  private executeCase(lines: string[], start: number, end: number, startOrig: number = start): number {
+    const caseLine = lines[start].trim();
+    const caseExprStr = caseLine.replace(/^case\s*/, '').trim();
+    const caseVal = caseExprStr ? this.evalExpression(caseExprStr) : null;
+
+    interface CaseBranch { values: string[]; lines: string[]; lineBase: number; isElse: boolean; }
+    const branches: CaseBranch[] = [];
+    let currentBranch: CaseBranch | null = null;
+
+    let depth = 1;
+    let i = start + 1;
+
+    while (i < end) {
+      const l = lines[i].trim();
+      if (/^(if|unless|while|for|begin|def|class|case)\b/.test(l)) {
+        depth++;
+        if (currentBranch) {
+          if (currentBranch.lineBase < 0 && l) currentBranch.lineBase = startOrig + (i - start);
+          currentBranch.lines.push(lines[i]);
+        }
+        i++;
+        continue;
+      }
+      if (/^end\b/.test(l)) {
+        depth--;
+        if (depth === 0) break;
+        if (currentBranch) {
+          if (currentBranch.lineBase < 0 && l) currentBranch.lineBase = startOrig + (i - start);
+          currentBranch.lines.push(lines[i]);
+        }
+        i++;
+        continue;
+      }
+      if (depth === 1 && /^when\b/.test(l)) {
+        const valStr = l.replace(/^when\s+/, '').replace(/\s*then\s*.*$/, '').trim();
+        const thenPart = l.match(/\s+then\s+(.+)$/)?.[1]?.trim() ?? '';
+        const vals = this.splitArgs(valStr);
+        currentBranch = { values: vals, lines: thenPart ? [thenPart] : [], lineBase: -1, isElse: false };
+        branches.push(currentBranch);
+        i++;
+        continue;
+      }
+      if (depth === 1 && /^else\b/.test(l)) {
+        currentBranch = { values: [], lines: [], lineBase: -1, isElse: true };
+        branches.push(currentBranch);
+        i++;
+        continue;
+      }
+      if (currentBranch) {
+        if (currentBranch.lineBase < 0 && l) currentBranch.lineBase = startOrig + (i - start);
+        currentBranch.lines.push(lines[i]);
+      }
+      i++;
+    }
+
+    for (const branch of branches) {
+      if (branch.isElse) {
+        this.executeBlock(branch.lines, 0, branch.lines.length, branch.lineBase >= 0 ? branch.lineBase : 0);
+        break;
+      }
+      let matched = false;
+      for (const valExpr of branch.values) {
+        const val = this.evalExpression(valExpr.trim());
+        if (Array.isArray(val)) {
+          if (val.some(v => v === caseVal)) { matched = true; break; }
+        } else if (val === caseVal) {
+          matched = true; break;
+        }
+      }
+      if (matched) {
+        this.executeBlock(branch.lines, 0, branch.lines.length, branch.lineBase >= 0 ? branch.lineBase : 0);
+        break;
+      }
+    }
+
+    return i + 1;
+  }
+
+  private executeLoop(lines: string[], start: number, end: number, startOrig: number = start): number {
+    const body: string[] = [];
+    let bodyLineBase = -1;
+    let depth = 1;
+    let i = start + 1;
+
+    while (i < end) {
+      const l = lines[i].trim();
+      if (/^(if|unless|while|for|begin|def|loop|case)\b/.test(l)) depth++;
+      if (/^end\b/.test(l)) {
+        depth--;
+        if (depth === 0) break;
+      }
+      if (bodyLineBase < 0 && l) bodyLineBase = startOrig + (i - start);
+      body.push(lines[i]);
+      i++;
+    }
+
+    let loopCount = 0;
+    while (true) {
+      loopCount++;
+      if (loopCount > this.maxIterations) throw new Error('Loop exceeded maximum iterations');
+      try {
+        this.executeBlock(body, 0, body.length, bodyLineBase >= 0 ? bodyLineBase : 0);
+      } catch(e) {
+        if (e instanceof BreakException) break;
+        if (e instanceof NextException) continue;
         throw e;
       }
     }
 
     return i + 1;
+  }
+
+  private generateAttrMethods(line: string, classDef: MrubyClassDef): void {
+    const match = line.match(/^attr_(accessor|reader|writer)\s+(.+)$/);
+    if (!match) return;
+    const kind = match[1];
+    const attrNames = this.splitArgs(match[2]).map(a => a.replace(/^:/, '').trim());
+
+    for (const name of attrNames) {
+      if (kind === 'accessor' || kind === 'reader') {
+        const getter: MrubyMethod = {
+          __type: 'method',
+          name,
+          params: [],
+          body: [`@${name}`],
+          bodyLineBase: 0,
+          closure: this.env,
+          ownerClassName: classDef.name
+        };
+        classDef.methods.set(name, getter);
+      }
+      if (kind === 'accessor' || kind === 'writer') {
+        const setter: MrubyMethod = {
+          __type: 'method',
+          name: `${name}=`,
+          params: ['value'],
+          body: [`@${name} = value`],
+          bodyLineBase: 0,
+          closure: this.env,
+          ownerClassName: classDef.name
+        };
+        classDef.methods.set(`${name}=`, setter);
+      }
+    }
+  }
+
+  private callSuper(expr: string): MrubyValue {
+    if (!this.currentSelf) return null;
+    const frame = this.currentMethodStack[this.currentMethodStack.length - 1];
+    if (!frame) return null;
+
+    const ownerCls = this.classes.get(frame.className);
+    if (!ownerCls || !ownerCls.superClassName) return null;
+
+    let cls: MrubyClassDef | null = this.classes.get(ownerCls.superClassName) ?? null;
+    let superMethod: MrubyMethod | null = null;
+    const visited = new Set<string>();
+    while (cls && !visited.has(cls.name)) {
+      visited.add(cls.name);
+      superMethod = cls.methods.get(frame.methodName) ?? null;
+      if (superMethod) break;
+      cls = cls.superClassName ? (this.classes.get(cls.superClassName) ?? null) : null;
+    }
+    if (!superMethod) return null;
+
+    let argsStr = expr.replace(/^super\s*/, '').trim();
+    if (argsStr.startsWith('(') && argsStr.endsWith(')')) argsStr = argsStr.slice(1, -1);
+    const args = argsStr ? this.splitArgs(argsStr).map(a => this.evalExpression(a)) : [];
+
+    return this.executeInstanceMethod(this.currentSelf, superMethod, args);
+  }
+
+  private callMathMethod(method: string, args: MrubyValue[]): MrubyValue {
+    const n = typeof args[0] === 'number' ? args[0] : parseFloat(String(args[0] ?? 0));
+    switch (method) {
+      case 'sqrt': return Math.sqrt(n);
+      case 'cbrt': return Math.cbrt(n);
+      case 'sin': return Math.sin(n);
+      case 'cos': return Math.cos(n);
+      case 'tan': return Math.tan(n);
+      case 'asin': return Math.asin(n);
+      case 'acos': return Math.acos(n);
+      case 'atan': return Math.atan(n);
+      case 'atan2': return Math.atan2(n, typeof args[1] === 'number' ? args[1] : parseFloat(String(args[1] ?? 0)));
+      case 'exp': return Math.exp(n);
+      case 'log': return args.length > 1 ? Math.log(n) / Math.log(typeof args[1] === 'number' ? args[1] : parseFloat(String(args[1]))) : Math.log(n);
+      case 'log2': return Math.log2(n);
+      case 'log10': return Math.log10(n);
+      case 'pow': return Math.pow(n, typeof args[1] === 'number' ? args[1] : parseFloat(String(args[1] ?? 0)));
+      case 'hypot': return Math.hypot(n, typeof args[1] === 'number' ? args[1] : parseFloat(String(args[1] ?? 0)));
+      case 'floor': return Math.floor(n);
+      case 'ceil': return Math.ceil(n);
+      case 'frexp': {
+        if (n === 0) return [0, 0];
+        const exp = Math.floor(Math.log2(Math.abs(n))) + 1;
+        return [n / Math.pow(2, exp), exp];
+      }
+    }
+    return null;
   }
 
   private executePuts(line: string): void {
@@ -711,10 +972,35 @@ class MrubyInterpreter {
   }
 
   private evalStatement(line: string): MrubyValue {
+    // Handle break/next with optional postfix condition
+    if (line === 'break') throw new BreakException();
+    if (line === 'next') throw new NextException();
+    if (/^break\s+if\s+/.test(line)) {
+      const cond = line.slice(9).trim();
+      if (this.isTruthy(this.evalExpression(cond))) throw new BreakException();
+      return null;
+    }
+    if (/^break\s+unless\s+/.test(line)) {
+      const cond = line.slice(12).trim();
+      if (!this.isTruthy(this.evalExpression(cond))) throw new BreakException();
+      return null;
+    }
+    if (/^next\s+if\s+/.test(line)) {
+      const cond = line.slice(8).trim();
+      if (this.isTruthy(this.evalExpression(cond))) throw new NextException();
+      return null;
+    }
+    if (/^next\s+unless\s+/.test(line)) {
+      const cond = line.slice(11).trim();
+      if (!this.isTruthy(this.evalExpression(cond))) throw new NextException();
+      return null;
+    }
+
     // Handle output functions in block bodies
     if (/^puts(\s+|$|\()/.test(line)) { this.executePuts(line); return null; }
     if (/^print(\s+|$|\()/.test(line)) { this.executePrint(line); return null; }
-    if (/^p(\s+|\()/.test(line)) { this.executeP(line); return null; }
+    // Only treat 'p' as a function call when followed by space/( and not an assignment
+    if (/^p(\s+|\()/.test(line) && !/^p\s*[+*/%=-]?=/.test(line)) { this.executeP(line); return null; }
 
     const multiAssignMatch = line.match(/^([a-zA-Z_@$][\w,\s]*)\s*=\s*(.+)$/);
     if (multiAssignMatch) {
@@ -794,6 +1080,20 @@ class MrubyInterpreter {
     if (expr === 'true') return true;
     if (expr === 'false') return false;
 
+    // Module constants (Math::PI, etc.)
+    const colonMatch = expr.match(/^([A-Z]\w*)::(\w+)$/);
+    if (colonMatch) {
+      const mod = colonMatch[1];
+      const constant = colonMatch[2];
+      if (mod === 'Math') {
+        switch (constant) {
+          case 'PI': return Math.PI;
+          case 'E': return Math.E;
+          case 'INFINITY': return Infinity;
+        }
+      }
+    }
+
     if (/^-?\d+$/.test(expr)) return parseInt(expr, 10);
     if (/^-?\d+\.\d+$/.test(expr)) return parseFloat(expr);
 
@@ -849,12 +1149,21 @@ class MrubyInterpreter {
       return this.evalExpression(andKeyword[1]);
     }
 
-    for (const op of ['==', '!=', '<=', '>=', '<', '>']) {
+    for (const op of ['<=>','==', '!=', '<=', '>=', '<', '>']) {
       const parts = this.splitBinary(expr, op);
       if (parts) {
         const left = this.evalExpression(parts[0]);
         const right = this.evalExpression(parts[1]);
         switch (op) {
+          case '<=>': {
+            if (typeof left === 'number' && typeof right === 'number') {
+              return left < right ? -1 : left > right ? 1 : 0;
+            }
+            if (typeof left === 'string' && typeof right === 'string') {
+              return left < right ? -1 : left > right ? 1 : 0;
+            }
+            return null;
+          }
           case '==': return left === right;
           case '!=': return left !== right;
           case '<': return (left as number) < (right as number);
@@ -907,6 +1216,11 @@ class MrubyInterpreter {
     if (expr.startsWith('-') && expr.length > 1) {
       const inner = this.evalExpression(expr.slice(1));
       if (typeof inner === 'number') return -inner;
+    }
+
+    // super keyword - after arithmetic so `super + x` works correctly
+    if (expr === 'super' || /^super\s*\(/.test(expr) || /^super\s+[^+\-*\/%|&<>=!]/.test(expr)) {
+      return this.callSuper(expr);
     }
 
     const dotCallResult = this.tryDotCall(expr);
@@ -964,7 +1278,14 @@ class MrubyInterpreter {
     }
 
     if (/^[a-zA-Z_$][\w]*$/.test(expr)) {
-      return this.env.get(expr);
+      // Check user-defined methods first (bare call without parens/args)
+      if (this.methods.has(expr)) return this.callMethod(expr, '');
+      const envVal = this.env.get(expr);
+      if (envVal !== null) return envVal;
+      // Try as a kernel method call (gets, rand, __method__, etc.)
+      const knownKernelMethods = new Set(['gets', 'readline', 'rand', '__method__', 'block_given?']);
+      if (knownKernelMethods.has(expr)) return this.callMethod(expr, '');
+      return null;
     }
 
     return null;
@@ -1080,6 +1401,14 @@ class MrubyInterpreter {
 
     const obj = this.evalExpression(objExpr);
 
+    // Handle setter calls: obj.attr = value (Ruby setter method syntax)
+    const setterMatch = rest.match(/^(\w+)\s*=\s*(.+)$/);
+    if (setterMatch) {
+      const setterMethodName = setterMatch[1] + '=';
+      const valueExpr = setterMatch[2].trim();
+      return this.callBuiltinMethod(obj, setterMethodName, valueExpr, objExpr);
+    }
+
     const methodMatch = rest.match(/^(\w+[\?!]?)\s*(?:\((.*?)\))?\s*$/);
     if (!methodMatch) return undefined;
 
@@ -1091,6 +1420,11 @@ class MrubyInterpreter {
 
   private callBuiltinMethod(obj: MrubyValue, method: string, argsStr: string, _objExpr: string): MrubyValue {
     const args = argsStr ? this.splitArgs(argsStr).map(a => this.evalExpression(a)) : [];
+
+    // Handle Math module
+    if (_objExpr === 'Math') {
+      return this.callMathMethod(method, args);
+    }
 
     // Handle class objects (ClassName.new, class methods)
     if (obj && typeof obj === 'object' && '__type' in obj && (obj as MrubyClassDef).__type === 'class') {
@@ -1224,8 +1558,74 @@ class MrubyInterpreter {
           const pattern = String(args[0]);
           return obj.match(new RegExp(pattern)) ? true : false;
         }
+        case 'match?': {
+          const pattern = String(args[0]);
+          return new RegExp(pattern).test(obj);
+        }
         case 'encode': return obj;
         case 'force_encoding': return obj;
+        case 'capitalize': return obj.charAt(0).toUpperCase() + obj.slice(1).toLowerCase();
+        case 'swapcase': return obj.split('').map(c => c === c.toUpperCase() ? c.toLowerCase() : c.toUpperCase()).join('');
+        case 'lstrip': return obj.replace(/^\s+/, '');
+        case 'rstrip': return obj.replace(/\s+$/, '');
+        case 'succ': case 'next': {
+          if (obj.length === 0) return '';
+          const last = obj[obj.length - 1];
+          if (/[a-z]/.test(last)) return obj.slice(0, -1) + String.fromCharCode(last.charCodeAt(0) + 1 > 122 ? 97 : last.charCodeAt(0) + 1);
+          if (/[A-Z]/.test(last)) return obj.slice(0, -1) + String.fromCharCode(last.charCodeAt(0) + 1 > 90 ? 65 : last.charCodeAt(0) + 1);
+          if (/[0-9]/.test(last)) return obj.slice(0, -1) + String.fromCharCode(last.charCodeAt(0) + 1 > 57 ? 48 : last.charCodeAt(0) + 1);
+          return obj;
+        }
+        case 'ord': return obj.charCodeAt(0) || 0;
+        case 'hex': return parseInt(obj, 16) || 0;
+        case 'oct': return parseInt(obj, 8) || 0;
+        case 'delete': {
+          if (args[0] !== undefined) {
+            const chars = String(args[0]).split('');
+            return obj.split('').filter(c => !chars.includes(c)).join('');
+          }
+          return obj;
+        }
+        case 'count': {
+          if (args[0] !== undefined) {
+            const chars = String(args[0]).split('');
+            return obj.split('').filter(c => chars.includes(c)).length;
+          }
+          return 0;
+        }
+        case 'squeeze': {
+          const chars = args[0] !== undefined ? String(args[0]).split('') : null;
+          return obj.replace(/(.)\1+/g, (match, char) => {
+            if (chars === null || chars.includes(char)) return char;
+            return match;
+          });
+        }
+        case 'scan': {
+          if (args[0] !== undefined) {
+            const pattern = new RegExp(String(args[0]), 'g');
+            return obj.match(pattern) ?? [];
+          }
+          return [];
+        }
+        case 'slice': case '[]': {
+          const idx = args[0];
+          if (typeof idx === 'number') {
+            const len = args[1] !== undefined ? (typeof args[1] === 'number' ? args[1] : parseInt(String(args[1]))) : 1;
+            const start = idx < 0 ? obj.length + idx : idx;
+            return args[1] !== undefined ? obj.slice(start, start + len) : (obj[start] ?? null);
+          }
+          return null;
+        }
+        case 'insert': {
+          const pos = typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]));
+          const str = String(args[1] ?? '');
+          if (pos < 0) return obj.slice(0, obj.length + pos + 1) + str + obj.slice(obj.length + pos + 1);
+          return obj.slice(0, pos) + str + obj.slice(pos);
+        }
+        case 'replace': return String(args[0] ?? '');
+        case 'clear': return '';
+        case 'frozen?': return false;
+        case 'nil?': return false;
         case '*': {
           const n = typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]));
           return obj.repeat(n);
@@ -1233,19 +1633,15 @@ class MrubyInterpreter {
         case '+': {
           return obj + String(args[0]);
         }
-        case '[]': {
-          const idx = args[0];
-          if (typeof idx === 'number') {
-            return idx < 0 ? obj[obj.length + idx] : obj[idx];
-          }
-          return null;
-        }
       }
     }
 
     if (typeof obj === 'number') {
       switch (method) {
-        case 'to_s': return String(obj);
+        case 'to_s': {
+          const base = args[0] !== undefined ? (typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]))) : 10;
+          return obj.toString(base);
+        }
         case 'to_i': return Math.trunc(obj);
         case 'to_f': return obj;
         case 'to_r': return String(obj);
@@ -1255,12 +1651,77 @@ class MrubyInterpreter {
         case 'zero?': return obj === 0;
         case 'positive?': return obj > 0;
         case 'negative?': return obj < 0;
-        case 'round': return args[0] !== undefined ? parseFloat(obj.toFixed(typeof args[0] === 'number' ? args[0] : parseInt(String(args[0])))) : Math.round(obj);
-        case 'floor': return Math.floor(obj);
+        case 'finite?': return isFinite(obj);
+        case 'infinite?': return obj === Infinity ? 1 : obj === -Infinity ? -1 : null;
+        case 'nan?': return isNaN(obj);
+        case 'round': {
+          const prec = args[0] !== undefined ? (typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]))) : null;
+          return prec !== null ? parseFloat(obj.toFixed(prec)) : Math.round(obj);
+        }
+        case 'floor': {
+          if (args[0] !== undefined) {
+            const prec = typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]));
+            const factor = Math.pow(10, prec);
+            return Math.floor(obj * factor) / factor;
+          }
+          return Math.floor(obj);
+        }
         case 'ceil': return Math.ceil(obj);
+        case 'truncate': return Math.trunc(obj);
+        case 'divmod': {
+          const n = typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]));
+          return [Math.floor(obj / n), obj % n];
+        }
+        case 'div': {
+          const n = typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]));
+          return Math.floor(obj / n);
+        }
+        case 'modulo': case 'remainder': {
+          const n = typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]));
+          return obj % n;
+        }
+        case 'pow': {
+          const n = typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]));
+          return Math.pow(obj, n);
+        }
+        case 'gcd': {
+          const b = typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]));
+          let a = Math.abs(Math.trunc(obj));
+          let bb = Math.abs(b);
+          while (bb) { const t = bb; bb = a % bb; a = t; }
+          return a;
+        }
+        case 'lcm': {
+          const b = typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]));
+          const a = Math.abs(Math.trunc(obj));
+          const bb = Math.abs(b);
+          if (a === 0 || bb === 0) return 0;
+          let ga = a, gb = bb;
+          while (gb) { const t = gb; gb = ga % gb; ga = t; }
+          return (a / ga) * bb;
+        }
+        case 'digits': {
+          const base = args[0] !== undefined ? (typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]))) : 10;
+          if (obj === 0) return [0];
+          const n = Math.abs(Math.trunc(obj));
+          const digits: number[] = [];
+          let tmp = n;
+          while (tmp > 0) { digits.push(tmp % base); tmp = Math.floor(tmp / base); }
+          return digits;
+        }
+        case 'succ': case 'next': return obj + 1;
+        case 'pred': return obj - 1;
+        case 'between?': return (obj as number) >= (args[0] as number) && (obj as number) <= (args[1] as number);
+        case 'clamp': {
+          const lo = args[0] as number;
+          const hi = args[1] as number;
+          return obj < lo ? lo : obj > hi ? hi : obj;
+        }
         case 'sqrt': return Math.sqrt(obj);
         case 'chr': return String.fromCharCode(obj);
         case 'inspect': return String(obj);
+        case 'frozen?': return true;
+        case 'nil?': return false;
         case 'times': return null;
         case 'upto': return null;
         case 'downto': return null;
@@ -1368,6 +1829,83 @@ class MrubyInterpreter {
         }
         case 'inspect': return '[' + obj.map(x => this.inspect(x)).join(', ') + ']';
         case 'to_s': return '[' + obj.map(x => this.inspect(x)).join(', ') + ']';
+        case 'frozen?': return false;
+        case 'nil?': return false;
+        case 'reverse!': obj.reverse(); return obj;
+        case 'uniq!': {
+          const seen = new Set<string>();
+          const result: MrubyValue[] = [];
+          for (const x of obj) {
+            const key = JSON.stringify(x);
+            if (!seen.has(key)) { seen.add(key); result.push(x); }
+          }
+          obj.splice(0, obj.length, ...result);
+          return obj;
+        }
+        case 'compact!': {
+          const filtered = obj.filter(x => x !== null);
+          obj.splice(0, obj.length, ...filtered);
+          return obj;
+        }
+        case 'combination': {
+          const n = typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]));
+          const result: MrubyValue[] = [];
+          const combine = (start: number, combo: MrubyValue[]) => {
+            if (combo.length === n) { result.push([...combo]); return; }
+            for (let i = start; i < obj.length; i++) {
+              combo.push(obj[i]);
+              combine(i + 1, combo);
+              combo.pop();
+            }
+          };
+          combine(0, []);
+          return result;
+        }
+        case 'permutation': {
+          const n = args[0] !== undefined ? (typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]))) : obj.length;
+          const result: MrubyValue[] = [];
+          const used: boolean[] = new Array(obj.length).fill(false);
+          const permute = (perm: MrubyValue[]) => {
+            if (perm.length === n) { result.push([...perm]); return; }
+            for (let i = 0; i < obj.length; i++) {
+              if (!used[i]) {
+                used[i] = true;
+                perm.push(obj[i]);
+                permute(perm);
+                perm.pop();
+                used[i] = false;
+              }
+            }
+          };
+          permute([]);
+          return result;
+        }
+        case 'product': {
+          const other = Array.isArray(args[0]) ? args[0] : [args[0]];
+          return obj.flatMap(x => other.map(y => [x, y]));
+        }
+        case 'intersection': {
+          const other = args[0];
+          if (Array.isArray(other)) return obj.filter(x => other.some(y => y === x));
+          return obj;
+        }
+        case 'union': {
+          const other = args[0];
+          if (Array.isArray(other)) {
+            const combined = [...obj, ...other];
+            return [...new Set(combined.map(x => JSON.stringify(x)))].map(x => JSON.parse(x) as MrubyValue);
+          }
+          return obj;
+        }
+        case 'difference': {
+          const other = args[0];
+          if (Array.isArray(other)) return obj.filter(x => !other.some(y => y === x));
+          return obj;
+        }
+        case 'flatten': {
+          const depth = args[0] !== undefined ? (typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]))) : Infinity;
+          return (obj as unknown[]).flat(depth) as MrubyValue[];
+        }
         case 'each': case 'map': case 'collect': case 'select': case 'reject': case 'find':
         case 'detect': case 'any?': case 'all?': case 'none?': case 'reduce': case 'inject':
           return null;
@@ -1404,10 +1942,36 @@ class MrubyInterpreter {
           }
           return result;
         }
+        case 'merge!': case 'update': {
+          const other = args[0] as MrubyHash;
+          if (other && other.__type === 'hash') {
+            for (const [k, v] of other.data) hash.data.set(k, v);
+          }
+          return hash;
+        }
+        case 'store': {
+          hash.data.set(String(args[0]), args[1] ?? null);
+          return args[1] ?? null;
+        }
         case 'to_a': return Array.from(hash.data.entries()).map(([k, v]) => [k, v]);
         case 'any?': return hash.data.size > 0;
         case 'all?': return hash.data.size > 0;
         case 'none?': return hash.data.size === 0;
+        case 'min_by': case 'max_by': case 'each_with_object': return null;
+        case 'flatten': {
+          const result: MrubyValue[] = [];
+          for (const [k, v] of hash.data) { result.push(k); result.push(v); }
+          return result;
+        }
+        case 'invert': {
+          const inv: MrubyHash = { __type: 'hash', data: new Map() };
+          for (const [k, v] of hash.data) inv.data.set(String(v), k);
+          return inv;
+        }
+        case 'each_key': case 'each_value': return null;
+        case 'frozen?': return false;
+        case 'nil?': return false;
+        case 'dup': case 'clone': return { __type: 'hash', data: new Map(hash.data) };
         case 'inspect': case 'to_s': {
           const pairs = Array.from(hash.data.entries()).map(([k, v]) => `${k}: ${this.inspect(v)}`);
           return '{' + pairs.join(', ') + '}';
@@ -1421,7 +1985,9 @@ class MrubyInterpreter {
         case 'to_s': return '';
         case 'to_a': return [];
         case 'to_i': return 0;
+        case 'to_f': return 0.0;
         case 'inspect': return 'nil';
+        case 'frozen?': return true;
       }
     }
 
@@ -1430,6 +1996,9 @@ class MrubyInterpreter {
         case 'to_s': return String(obj);
         case 'nil?': return false;
         case 'inspect': return String(obj);
+        case 'frozen?': return true;
+        case '&': return obj && this.isTruthy(args[0]);
+        case '|': return obj || this.isTruthy(args[0]);
       }
     }
 
@@ -1446,9 +2015,65 @@ class MrubyInterpreter {
     const blockParams = blockMatch[3] ? blockMatch[3].split(',').map(p => p.trim()) : [];
     const blockBody = blockMatch[4].trim();
 
+    // Helper to split block body on `;` (outside strings/brackets)
+    const splitBlockBody = (body: string): string[] => {
+      const stmts: string[] = [];
+      let depth = 0, inStr = false, strChar = '', cur = '';
+      for (let ci = 0; ci < body.length; ci++) {
+        const ch = body[ci];
+        if (!inStr && (ch === '"' || ch === "'")) { inStr = true; strChar = ch; cur += ch; }
+        else if (inStr && ch === strChar && (ci === 0 || body[ci-1] !== '\\')) { inStr = false; cur += ch; }
+        else if (inStr) { cur += ch; }
+        else if (ch === '(' || ch === '[' || ch === '{') { depth++; cur += ch; }
+        else if (ch === ')' || ch === ']' || ch === '}') { depth--; cur += ch; }
+        else if (depth === 0 && ch === ';') { if (cur.trim()) stmts.push(cur.trim()); cur = ''; }
+        else { cur += ch; }
+      }
+      if (cur.trim()) stmts.push(cur.trim());
+      return stmts;
+    };
+    const blockStatements = splitBlockBody(blockBody);
+    const runBodyStatements = (): MrubyValue => {
+      let result: MrubyValue = null;
+      for (const stmt of blockStatements) {
+        result = this.evalStatement(stmt);
+      }
+      return result;
+    };
+
     const dotPos = this.findLastDot(receiverAndMethod);
-    
+
+    // Handle naked method calls with blocks (no dot): loop { }, etc.
     if (dotPos < 0) {
+      if (receiverAndMethod === 'loop') {
+        const runNakedBlock = (): MrubyValue => {
+          const blockEnv = new Environment(this.env);
+          const savedEnv = this.env;
+          this.env = blockEnv;
+          let blockResult: MrubyValue = null;
+          try {
+            blockResult = runBodyStatements();
+          } catch (e) {
+            this.env = savedEnv;
+            throw e;
+          }
+          this.env = savedEnv;
+          for (const [k, v] of blockEnv.getVars()) {
+            if (!blockParams.includes(k)) this.env.set(k, v);
+          }
+          return blockResult;
+        };
+        let loopCount = 0;
+        while (true) {
+          loopCount++;
+          if (loopCount > this.maxIterations) throw new Error('Loop exceeded maximum iterations');
+          try { runNakedBlock(); } catch(e) {
+            if (e instanceof BreakException) return null;
+            if (e instanceof NextException) continue;
+            throw e;
+          }
+        }
+      }
       return undefined;
     }
 
@@ -1473,7 +2098,7 @@ class MrubyInterpreter {
       
       let blockResult: MrubyValue = null;
       try {
-        blockResult = this.evalStatement(blockBody);
+        blockResult = runBodyStatements();
       } catch (e) {
         this.env = savedEnv;
         throw e;
@@ -1529,7 +2154,7 @@ class MrubyInterpreter {
 
     if (Array.isArray(obj)) {
       switch (methodName) {
-        case 'each': case 'each_with_object': {
+        case 'each': {
           for (const item of obj) {
             this.checkIterations();
             try { runBlock([item]); } catch(e) {
@@ -1539,6 +2164,18 @@ class MrubyInterpreter {
             }
           }
           return obj;
+        }
+        case 'each_with_object': {
+          const accumulator = methodArgs[0] ?? null;
+          for (const item of obj) {
+            this.checkIterations();
+            try { runBlock([item, accumulator]); } catch(e) {
+              if (e instanceof BreakException) break;
+              if (e instanceof NextException) continue;
+              throw e;
+            }
+          }
+          return accumulator;
         }
         case 'each_with_index': {
           for (let i = 0; i < obj.length; i++) {
@@ -1676,6 +2313,48 @@ class MrubyInterpreter {
             return (kItem as number) > (kMax as number) ? item : max;
           });
         }
+        case 'map!': case 'collect!': {
+          for (let i = 0; i < obj.length; i++) {
+            this.checkIterations();
+            obj[i] = runBlock([obj[i]]);
+          }
+          return obj;
+        }
+        case 'select!': case 'filter!': case 'keep_if': {
+          const toKeep = obj.filter((item) => {
+            this.checkIterations();
+            return this.isTruthy(runBlock([item]));
+          });
+          obj.splice(0, obj.length, ...toKeep);
+          return obj;
+        }
+        case 'reject!': case 'delete_if': {
+          const toKeep = obj.filter((item) => {
+            this.checkIterations();
+            return !this.isTruthy(runBlock([item]));
+          });
+          obj.splice(0, obj.length, ...toKeep);
+          return obj;
+        }
+        case 'each_cons': {
+          const n = typeof methodArgs[0] === 'number' ? methodArgs[0] : parseInt(String(methodArgs[0]));
+          for (let i = 0; i <= obj.length - n; i++) {
+            this.checkIterations();
+            try { runBlock([obj.slice(i, i + n)]); } catch(e) {
+              if (e instanceof BreakException) break;
+              throw e;
+            }
+          }
+          return null;
+        }
+        case 'zip': {
+          const others = methodArgs.filter(a => Array.isArray(a));
+          return obj.map((x, i) => {
+            const combo: MrubyValue[] = [x, ...others.map(o => (o as MrubyValue[])[i] ?? null)];
+            runBlock(combo);
+            return combo;
+          });
+        }
       }
     }
 
@@ -1691,6 +2370,66 @@ class MrubyInterpreter {
             }
           }
           return obj;
+        }
+        case 'each_with_object': {
+          const accumulator = methodArgs[0] ?? null;
+          for (const [k, v] of hash.data) {
+            this.checkIterations();
+            try { runBlock([[k, v], accumulator]); } catch(e) {
+              if (e instanceof BreakException) break;
+              throw e;
+            }
+          }
+          return accumulator;
+        }
+        case 'each_key': {
+          for (const k of hash.data.keys()) {
+            this.checkIterations();
+            try { runBlock([k]); } catch(e) {
+              if (e instanceof BreakException) break;
+              throw e;
+            }
+          }
+          return obj;
+        }
+        case 'each_value': {
+          for (const v of hash.data.values()) {
+            this.checkIterations();
+            try { runBlock([v]); } catch(e) {
+              if (e instanceof BreakException) break;
+              throw e;
+            }
+          }
+          return obj;
+        }
+        case 'transform_keys': {
+          const result: MrubyHash = { __type: 'hash', data: new Map() };
+          for (const [k, v] of hash.data) {
+            const newKey = String(runBlock([k]));
+            result.data.set(newKey, v);
+          }
+          return result;
+        }
+        case 'transform_values': {
+          const result: MrubyHash = { __type: 'hash', data: new Map() };
+          for (const [k, v] of hash.data) {
+            result.data.set(k, runBlock([v]));
+          }
+          return result;
+        }
+        case 'transform_keys!': {
+          const entries = Array.from(hash.data.entries());
+          hash.data.clear();
+          for (const [k, v] of entries) {
+            hash.data.set(String(runBlock([k])), v);
+          }
+          return hash;
+        }
+        case 'transform_values!': {
+          for (const [k, v] of hash.data) {
+            hash.data.set(k, runBlock([v]));
+          }
+          return hash;
         }
         case 'map': case 'collect': {
           return Array.from(hash.data.entries()).map(([k, v]) => runBlock([k, v]));
@@ -1721,6 +2460,26 @@ class MrubyInterpreter {
           }
           return true;
         }
+        case 'min_by': {
+          let minKey: string | null = null;
+          let minVal: MrubyValue = null;
+          let minK: MrubyValue = null;
+          for (const [k, v] of hash.data) {
+            const key = runBlock([k, v]) as number;
+            if (minKey === null || key < (minK as number)) { minKey = k; minVal = v; minK = key; }
+          }
+          return minKey !== null ? [minKey, minVal] : null;
+        }
+        case 'max_by': {
+          let maxKey: string | null = null;
+          let maxVal: MrubyValue = null;
+          let maxK: MrubyValue = null;
+          for (const [k, v] of hash.data) {
+            const key = runBlock([k, v]) as number;
+            if (maxKey === null || key > (maxK as number)) { maxKey = k; maxVal = v; maxK = key; }
+          }
+          return maxKey !== null ? [maxKey, maxVal] : null;
+        }
       }
     }
 
@@ -1733,6 +2492,23 @@ class MrubyInterpreter {
           }
         }
         return obj;
+      }
+      if (methodName === 'each_line') {
+        for (const line of obj.split('\n')) {
+          try { runBlock([line + '\n']); } catch(e) {
+            if (e instanceof BreakException) break;
+            throw e;
+          }
+        }
+        return obj;
+      }
+      if (methodName === 'gsub') {
+        const pattern = String(methodArgs[0] ?? '');
+        return obj.replace(new RegExp(pattern, 'g'), (match) => String(runBlock([match])));
+      }
+      if (methodName === 'sub') {
+        const pattern = String(methodArgs[0] ?? '');
+        return obj.replace(new RegExp(pattern), (match) => String(runBlock([match])));
       }
     }
 
@@ -1827,10 +2603,26 @@ class MrubyInterpreter {
         const fArgs = this.splitArgs(argsStr).map(a => this.evalExpression(a));
         return this.sprintf(String(fArgs[0]), fArgs.slice(1));
       }
+      case '__method__': {
+        const frame = this.currentMethodStack[this.currentMethodStack.length - 1];
+        return frame ? frame.methodName : null;
+      }
+      case 'block_given?': return false;
+      case 'object_id': return Math.floor(Math.random() * 1000000);
+      case 'frozen?': return false;
+      case 'nil?': {
+        const val = this.evalExpression(argsStr);
+        return val === null;
+      }
       case 'gets': case 'readline': {
         if (this.inputLines.length > 0) {
           const line = this.inputLines.shift()!;
           return line + '\n';
+        }
+        // Fallback to window.prompt when no pre-typed input is available
+        if (typeof window !== 'undefined' && typeof window.prompt === 'function') {
+          const input = window.prompt('stdin> ') ?? '';
+          return input + '\n';
         }
         return null;
       }

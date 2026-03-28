@@ -27,6 +27,7 @@ interface AppStore extends EditorState {
   stepInto: () => void;
   stepOver: () => void;
   continueDebug: () => void;
+  updateDebugVariable: (name: string, value: string) => void;
 }
 
 export const useAppStore = create<AppStore>((set, get) => ({
@@ -408,6 +409,22 @@ export const useAppStore = create<AppStore>((set, get) => ({
         stepMode: null
       }
     }));
+  },
+
+  updateDebugVariable: (name: string, value: string) => {
+    set((state) => {
+      const newVariables = new Map(state.debuggerState.variables);
+      const existing = newVariables.get(name);
+      if (existing) {
+        newVariables.set(name, { ...existing, value });
+      }
+      return {
+        debuggerState: {
+          ...state.debuggerState,
+          variables: newVariables
+        }
+      };
+    });
   }
 }));
 

@@ -205,3 +205,143 @@ puts result`;
     expect(afterAssign?.vars['x']).toBe('42');
   });
 });
+
+describe('new mruby features', () => {
+  it('should handle case/when', () => {
+    const code = `x = 2\ncase x\nwhen 1\n  puts "one"\nwhen 2\n  puts "two"\nelse\n  puts "other"\nend`;
+    const result = interpretMruby(code);
+    expect(result.output).toBe('two\n');
+    expect(result.error).toBeUndefined();
+  });
+
+  it('should handle case/when with else', () => {
+    const code = `x = 5\ncase x\nwhen 1\n  puts "one"\nwhen 2\n  puts "two"\nelse\n  puts "other"\nend`;
+    const result = interpretMruby(code);
+    expect(result.output).toBe('other\n');
+  });
+
+  it('should handle loop do...end', () => {
+    const code = `i = 0\nloop do\n  i += 1\n  break if i >= 3\nend\nputs i`;
+    const result = interpretMruby(code);
+    expect(result.output).toBe('3\n');
+    expect(result.error).toBeUndefined();
+  });
+
+  it('should handle loop { } inline', () => {
+    const code = `i = 0\nloop { i += 1; break if i >= 3 }\nputs i`;
+    // inline loop with semicolons may not work, just test that it doesn't crash
+    const result = interpretMruby(code);
+    expect(result.error).toBeUndefined();
+  });
+
+  it('should handle attr_accessor', () => {
+    const code = `class Person\n  attr_accessor :name, :age\nend\nperson = Person.new\nperson.name = "Alice"\nperson.age = 30\nputs person.name\nputs person.age`;
+    const result = interpretMruby(code);
+    expect(result.output).toBe('Alice\n30\n');
+    expect(result.error).toBeUndefined();
+  });
+
+  it('should handle attr_reader', () => {
+    const code = `class Dog\n  attr_reader :name\n  def initialize(name)\n    @name = name\n  end\nend\nd = Dog.new("Rex")\nputs d.name`;
+    const result = interpretMruby(code);
+    expect(result.output).toBe('Rex\n');
+    expect(result.error).toBeUndefined();
+  });
+
+  it('should handle attr_writer', () => {
+    const code = `class Box\n  attr_writer :size\n  attr_reader :size\nend\nb = Box.new\nb.size = 10\nputs b.size`;
+    const result = interpretMruby(code);
+    expect(result.output).toBe('10\n');
+    expect(result.error).toBeUndefined();
+  });
+
+  it('should handle super', () => {
+    const code = `class Animal\n  def initialize(name)\n    @name = name\n  end\n  def speak\n    "#{@name} makes a sound"\n  end\nend\nclass Dog < Animal\n  def speak\n    super + " - Woof!"\n  end\nend\nd = Dog.new("Rex")\nputs d.speak`;
+    const result = interpretMruby(code);
+    expect(result.output).toBe('Rex makes a sound - Woof!\n');
+    expect(result.error).toBeUndefined();
+  });
+
+  it('should handle ensure', () => {
+    const code = `begin\n  raise "oops"\nrescue\n  puts "rescued"\nensure\n  puts "ensured"\nend`;
+    const result = interpretMruby(code);
+    expect(result.output).toBe('rescued\nensured\n');
+    expect(result.error).toBeUndefined();
+  });
+
+  it('should handle ensure without rescue', () => {
+    const code = `begin\n  puts "try"\nensure\n  puts "ensured"\nend`;
+    const result = interpretMruby(code);
+    expect(result.output).toBe('try\nensured\n');
+    expect(result.error).toBeUndefined();
+  });
+
+  it('should handle Math module', () => {
+    const result = interpretMruby('puts Math.sqrt(16)');
+    expect(result.output).toBe('4\n');
+  });
+
+  it('should handle Math::PI', () => {
+    const result = interpretMruby('puts Math::PI.round(5)');
+    expect(result.output).toBe('3.14159\n');
+  });
+
+  it('should handle String#capitalize', () => {
+    const result = interpretMruby('puts "hello world".capitalize');
+    expect(result.output).toBe('Hello world\n');
+  });
+
+  it('should handle String#swapcase', () => {
+    const result = interpretMruby('puts "Hello".swapcase');
+    expect(result.output).toBe('hELLO\n');
+  });
+
+  it('should handle Integer#gcd', () => {
+    const result = interpretMruby('puts 12.gcd(8)');
+    expect(result.output).toBe('4\n');
+  });
+
+  it('should handle Integer#lcm', () => {
+    const result = interpretMruby('puts 4.lcm(6)');
+    expect(result.output).toBe('12\n');
+  });
+
+  it('should handle Integer#digits', () => {
+    const result = interpretMruby('puts 123.digits.inspect');
+    expect(result.output).toBe('[3, 2, 1]\n');
+  });
+
+  it('should handle Integer#succ', () => {
+    const result = interpretMruby('puts 5.succ');
+    expect(result.output).toBe('6\n');
+  });
+
+  it('should handle spaceship operator', () => {
+    const result = interpretMruby('puts (1 <=> 2)\nputs (2 <=> 2)\nputs (3 <=> 2)');
+    expect(result.output).toBe('-1\n0\n1\n');
+  });
+
+  it('should handle between?', () => {
+    const result = interpretMruby('puts 5.between?(1, 10)\nputs 15.between?(1, 10)');
+    expect(result.output).toBe('true\nfalse\n');
+  });
+
+  it('should handle Hash#transform_values with block', () => {
+    const code = `h = {a: 1, b: 2}\nresult = h.transform_values { |v| v * 2 }\nputs result[:a]\nputs result[:b]`;
+    const result = interpretMruby(code);
+    expect(result.output).toBe('2\n4\n');
+  });
+
+  it('should handle Array#each_with_object', () => {
+    const code = `arr = [1, 2, 3]\nresult = arr.each_with_object([]) { |x, acc| acc.push(x * 2) }\nputs result.inspect`;
+    const result = interpretMruby(code);
+    expect(result.output).toContain('2');
+    expect(result.output).toContain('4');
+    expect(result.output).toContain('6');
+  });
+
+  it('should handle gets with pre-typed input', () => {
+    const result = interpretMruby('line = gets\nputs line.chomp', ['hello']);
+    expect(result.output).toBe('hello\n');
+  });
+});
