@@ -38,7 +38,7 @@ export const Debugger: React.FC = () => {
       <div className="debugger-toolbar flex gap-2 px-4 py-2 bg-slate-800 border-b border-slate-700">
         <button
           className={`px-3 py-1 rounded text-xs ${canStep ? 'bg-blue-600 hover:bg-blue-700 cursor-pointer' : 'bg-slate-600 cursor-not-allowed opacity-50'}`}
-          title="Step Into (F10)"
+          title="Step Into (F11)"
           onClick={canStep ? stepInto : undefined}
           disabled={!canStep}
         >
@@ -46,7 +46,7 @@ export const Debugger: React.FC = () => {
         </button>
         <button
           className={`px-3 py-1 rounded text-xs ${canStep ? 'bg-blue-600 hover:bg-blue-700 cursor-pointer' : 'bg-slate-600 cursor-not-allowed opacity-50'}`}
-          title="Step Over (F11)"
+          title="Step Over (F10)"
           onClick={canStep ? stepOver : undefined}
           disabled={!canStep}
         >
