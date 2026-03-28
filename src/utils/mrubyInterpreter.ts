@@ -13,13 +13,13 @@ export interface TraceEvent {
   callStack: string[];
 }
 
-export function interpretMruby(code: string): InterpreterResult {
-  const interpreter = new MrubyInterpreter();
+export function interpretMruby(code: string, inputLines: string[] = []): InterpreterResult {
+  const interpreter = new MrubyInterpreter(inputLines);
   return interpreter.run(code);
 }
 
-export function interpretMrubyDebug(code: string): { result: InterpreterResult; trace: TraceEvent[] } {
-  const interpreter = new MrubyInterpreter();
+export function interpretMrubyDebug(code: string, inputLines: string[] = []): { result: InterpreterResult; trace: TraceEvent[] } {
+  const interpreter = new MrubyInterpreter(inputLines);
   return interpreter.runDebug(code);
 }
 
@@ -107,10 +107,15 @@ class MrubyInterpreter {
   private callStackNames: string[] = ['<main>'];
   private maxIterations = 10000;
   private iterationCount = 0;
+  private inputLines: string[];
 
   // Debug trace support
   private debugMode = false;
   private debugTrace: TraceEvent[] = [];
+
+  constructor(inputLines: string[] = []) {
+    this.inputLines = [...inputLines];
+  }
 
   run(code: string): InterpreterResult {
     try {
@@ -1821,6 +1826,13 @@ class MrubyInterpreter {
       case 'sprintf': case 'format': {
         const fArgs = this.splitArgs(argsStr).map(a => this.evalExpression(a));
         return this.sprintf(String(fArgs[0]), fArgs.slice(1));
+      }
+      case 'gets': case 'readline': {
+        if (this.inputLines.length > 0) {
+          const line = this.inputLines.shift()!;
+          return line + '\n';
+        }
+        return null;
       }
     }
 

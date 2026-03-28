@@ -1,10 +1,11 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { AlertCircle, Info, AlertTriangle } from 'lucide-react';
 
 export const Console: React.FC = () => {
-  const { consoleEntries, lastResult, clearConsole } = useAppStore();
+  const { consoleEntries, lastResult, clearConsole, clearConsoleInputLines, consoleInputLines, addConsoleInputLine } = useAppStore();
   const endRef = useRef<HTMLDivElement>(null);
+  const [inputValue, setInputValue] = useState('');
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -23,12 +24,24 @@ export const Console: React.FC = () => {
     }
   };
 
+  const handleClear = () => {
+    clearConsole();
+    clearConsoleInputLines();
+  };
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      addConsoleInputLine(inputValue);
+      setInputValue('');
+    }
+  };
+
   return (
     <div className="console-panel flex flex-col h-full bg-slate-900 text-slate-100 font-mono text-sm">
       <div className="console-header flex justify-between items-center px-4 py-2 bg-slate-800 border-b border-slate-700">
         <h3 className="font-semibold">Console</h3>
         <button
-          onClick={clearConsole}
+          onClick={handleClear}
           className="px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded"
         >
           Clear
@@ -36,8 +49,19 @@ export const Console: React.FC = () => {
       </div>
 
       <div className="console-output flex-1 overflow-auto p-3 space-y-1">
-        {consoleEntries.length === 0 && !lastResult && (
+        {consoleEntries.length === 0 && consoleInputLines.length === 0 && !lastResult && (
           <div className="text-slate-500 text-xs">No output yet...</div>
+        )}
+
+        {consoleInputLines.length > 0 && (
+          <div className="mb-1">
+            {consoleInputLines.map((line, i) => (
+              <div key={i} className="text-cyan-400 flex gap-1">
+                <span className="text-slate-500 select-none">&gt;</span>
+                <span>{line}</span>
+              </div>
+            ))}
+          </div>
         )}
 
         {consoleEntries.map((entry) => (
@@ -63,6 +87,18 @@ export const Console: React.FC = () => {
           Execution time: {lastResult.executionTime.toFixed(2)}ms
         </div>
       )}
+
+      <div className="console-input flex items-center gap-2 px-3 py-2 bg-slate-800 border-t border-slate-700">
+        <span className="text-cyan-400 select-none">stdin&gt;</span>
+        <input
+          type="text"
+          value={inputValue}
+          onChange={(e) => setInputValue(e.target.value)}
+          onKeyDown={handleInputKeyDown}
+          placeholder="Type input for gets/readline, then press Enter..."
+          className="flex-1 bg-transparent text-slate-100 placeholder-slate-500 outline-none text-xs"
+        />
+      </div>
     </div>
   );
 };
