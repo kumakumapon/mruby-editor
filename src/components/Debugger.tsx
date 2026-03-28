@@ -2,35 +2,65 @@ import React from 'react';
 import { useAppStore } from '@/store/useAppStore';
 
 export const Debugger: React.FC = () => {
-  const { debuggerState, toggleBreakpoint } = useAppStore();
-  const { breakpoints, variables, callStack, currentLine } = debuggerState;
+  const {
+    debuggerState,
+    toggleBreakpoint,
+    stepInto,
+    stepOver,
+    continueDebug,
+    stopDebug
+  } = useAppStore();
+  const { breakpoints, variables, callStack, currentLine, isPaused, isRunning, trace, traceIndex } = debuggerState;
+
+  const isAtEnd = traceIndex >= trace.length - 1;
+  const canStep = isPaused && trace.length > 0 && !isAtEnd;
 
   return (
     <div className="debugger-panel flex flex-col h-full bg-slate-900 text-slate-100 text-sm border-t border-slate-700">
       <div className="debugger-toolbar flex gap-2 px-4 py-2 bg-slate-800 border-b border-slate-700">
         <button
-          className="px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs"
+          className={`px-3 py-1 rounded text-xs ${canStep ? 'bg-blue-600 hover:bg-blue-700 cursor-pointer' : 'bg-slate-600 cursor-not-allowed opacity-50'}`}
           title="Step Into (F10)"
+          onClick={canStep ? stepInto : undefined}
+          disabled={!canStep}
         >
           Step In
         </button>
         <button
-          className="px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs"
+          className={`px-3 py-1 rounded text-xs ${canStep ? 'bg-blue-600 hover:bg-blue-700 cursor-pointer' : 'bg-slate-600 cursor-not-allowed opacity-50'}`}
           title="Step Over (F11)"
+          onClick={canStep ? stepOver : undefined}
+          disabled={!canStep}
         >
           Step Over
         </button>
         <button
-          className="px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-xs"
+          className={`px-3 py-1 rounded text-xs ${isPaused ? 'bg-green-600 hover:bg-green-700 cursor-pointer' : 'bg-slate-600 cursor-not-allowed opacity-50'}`}
           title="Continue (F5)"
+          onClick={isPaused ? continueDebug : undefined}
+          disabled={!isPaused}
         >
           Continue
         </button>
+        {isRunning && (
+          <button
+            className="px-3 py-1 bg-red-600 hover:bg-red-700 rounded text-xs cursor-pointer"
+            title="Stop Debugging"
+            onClick={stopDebug}
+          >
+            Stop
+          </button>
+        )}
       </div>
 
-      {currentLine >= 0 && (
+      {isPaused && currentLine > 0 && (
         <div className="px-4 py-2 bg-slate-800 border-b border-slate-700 text-yellow-400">
-          📍 Line {currentLine}
+          ⏸ Paused at line {currentLine}
+          {trace.length > 0 && (
+            <span className="text-slate-500 ml-2 text-xs">
+              (step {traceIndex + 1}/{trace.length})
+            </span>
+          )}
         </div>
       )}
 
@@ -39,19 +69,25 @@ export const Debugger: React.FC = () => {
           <h4 className="px-4 py-2 bg-slate-800 font-semibold text-xs">
             BREAKPOINTS ({breakpoints.size})
           </h4>
-          <div className="px-2 py-1">
+          <div className="px-2 py-1 text-xs text-slate-400">
             {breakpoints.size === 0 ? (
-              <div className="text-slate-500 text-xs px-2 py-1">No breakpoints</div>
+              <div className="text-slate-500 px-2 py-1">
+                クリックして行番号にブレークポイントを設定
+              </div>
             ) : (
               Array.from(breakpoints.values()).map((bp) => (
                 <div
                   key={bp.id}
                   className="flex items-center justify-between px-2 py-1 hover:bg-slate-800 rounded"
                 >
-                  <span>Line {bp.line}</span>
+                  <span className="flex items-center gap-2">
+                    <span className="text-red-500">●</span>
+                    <span>Line {bp.line}</span>
+                  </span>
                   <button
                     onClick={() => toggleBreakpoint(bp.line)}
                     className="text-red-500 hover:text-red-400"
+                    title="Remove breakpoint"
                   >
                     ×
                   </button>

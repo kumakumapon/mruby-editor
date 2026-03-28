@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import { EditorState, ExecutionResult, DebuggerState, ConsoleEntry } from '@/types';
-import { interpretMruby } from '@/utils/mrubyInterpreter';
+import { EditorState, ExecutionResult, DebuggerState, ConsoleEntry, TraceEvent } from '@/types';
+import { interpretMruby, interpretMrubyDebug } from '@/utils/mrubyInterpreter';
 
 interface AppStore extends EditorState {
   setCode: (code: string) => void;
@@ -18,8 +18,11 @@ interface AppStore extends EditorState {
 
   debuggerState: DebuggerState;
   toggleBreakpoint: (line: number) => void;
-  stepInto: () => Promise<void>;
-  stepOver: () => Promise<void>;
+  startDebug: (code: string) => Promise<void>;
+  stopDebug: () => void;
+  stepInto: () => void;
+  stepOver: () => void;
+  continueDebug: () => void;
 }
 
 export const useAppStore = create<AppStore>((set, get) => ({
@@ -123,7 +126,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
     breakpoints: new Map(),
     callStack: [],
     variables: new Map(),
-    stepMode: null
+    stepMode: null,
+    trace: [],
+    traceIndex: -1
   },
 
   toggleBreakpoint: (line) => {
@@ -150,21 +155,257 @@ export const useAppStore = create<AppStore>((set, get) => ({
     });
   },
 
-  stepInto: async () => {
+  startDebug: async (code) => {
     set((state) => ({
       debuggerState: {
         ...state.debuggerState,
+        isRunning: true,
+        isPaused: false,
+        currentLine: -1,
+        trace: [],
+        traceIndex: -1,
+        variables: new Map(),
+        callStack: []
+      },
+      isExecuting: true
+    }));
+
+    try {
+      const { result, trace } = interpretMrubyDebug(code);
+      const breakpoints = get().debuggerState.breakpoints;
+
+      // Find first breakpoint in trace, or start at index 0
+      let startIdx = 0;
+      if (breakpoints.size > 0) {
+        const bpLines = new Set(Array.from(breakpoints.values()).filter(bp => bp.enabled).map(bp => bp.line));
+        const bpIdx = trace.findIndex(e => bpLines.has(e.line));
+        if (bpIdx >= 0) startIdx = bpIdx;
+      }
+
+      if (trace.length === 0) {
+        // No trace (empty code or all comments)
+        const executionTime = 0;
+        set((state) => ({
+          debuggerState: {
+            ...state.debuggerState,
+            isRunning: false,
+            isPaused: false,
+            currentLine: -1
+          },
+          isExecuting: false,
+          lastResult: {
+            success: !result.error,
+            output: result.output,
+            error: result.error,
+            executionTime
+          }
+        }));
+        return;
+      }
+
+      // Update variables as Map<string, Variable>
+      const firstEvent = trace[startIdx];
+      const vars = buildVariableMap(firstEvent);
+
+      set((state) => ({
+        debuggerState: {
+          ...state.debuggerState,
+          isRunning: true,
+          isPaused: true,
+          trace,
+          traceIndex: startIdx,
+          currentLine: firstEvent.line,
+          variables: vars,
+          callStack: firstEvent.callStack.map(name => ({
+            functionName: name,
+            fileName: 'main.rb',
+            line: firstEvent.line,
+            column: 1
+          }))
+        },
+        isExecuting: false
+      }));
+
+      // Show output in console
+      if (result.output) {
+        get().addConsoleEntry({ type: 'log', message: result.output });
+      }
+      if (result.error) {
+        get().addConsoleEntry({ type: 'error', message: result.error });
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        debuggerState: {
+          ...state.debuggerState,
+          isRunning: false,
+          isPaused: false
+        },
+        isExecuting: false
+      }));
+      get().addConsoleEntry({ type: 'error', message: errorMsg });
+    }
+  },
+
+  stopDebug: () => {
+    set((state) => ({
+      debuggerState: {
+        ...state.debuggerState,
+        isRunning: false,
+        isPaused: false,
+        currentLine: -1,
+        trace: [],
+        traceIndex: -1,
+        variables: new Map(),
+        callStack: [],
+        stepMode: null
+      }
+    }));
+  },
+
+  stepInto: () => {
+    const state = get();
+    const { trace, traceIndex } = state.debuggerState;
+    if (!state.debuggerState.isPaused || trace.length === 0) return;
+
+    const nextIdx = traceIndex + 1;
+    if (nextIdx >= trace.length) {
+      // End of trace
+      set((s) => ({
+        debuggerState: {
+          ...s.debuggerState,
+          isRunning: false,
+          isPaused: false,
+          currentLine: -1,
+          stepMode: null
+        }
+      }));
+      return;
+    }
+
+    const event = trace[nextIdx];
+    const vars = buildVariableMap(event);
+    set((s) => ({
+      debuggerState: {
+        ...s.debuggerState,
+        traceIndex: nextIdx,
+        currentLine: event.line,
+        variables: vars,
+        callStack: event.callStack.map(name => ({
+          functionName: name,
+          fileName: 'main.rb',
+          line: event.line,
+          column: 1
+        })),
         stepMode: 'into'
       }
     }));
   },
 
-  stepOver: async () => {
-    set((state) => ({
+  stepOver: () => {
+    // Step over: advance to next line at same or outer call stack depth
+    const state = get();
+    const { trace, traceIndex } = state.debuggerState;
+    if (!state.debuggerState.isPaused || trace.length === 0) return;
+
+    const currentDepth = trace[traceIndex]?.callStack.length ?? 1;
+    let nextIdx = traceIndex + 1;
+    while (nextIdx < trace.length && trace[nextIdx].callStack.length > currentDepth) {
+      nextIdx++;
+    }
+
+    if (nextIdx >= trace.length) {
+      set((s) => ({
+        debuggerState: {
+          ...s.debuggerState,
+          isRunning: false,
+          isPaused: false,
+          currentLine: -1,
+          stepMode: null
+        }
+      }));
+      return;
+    }
+
+    const event = trace[nextIdx];
+    const vars = buildVariableMap(event);
+    set((s) => ({
       debuggerState: {
-        ...state.debuggerState,
+        ...s.debuggerState,
+        traceIndex: nextIdx,
+        currentLine: event.line,
+        variables: vars,
+        callStack: event.callStack.map(name => ({
+          functionName: name,
+          fileName: 'main.rb',
+          line: event.line,
+          column: 1
+        })),
         stepMode: 'over'
+      }
+    }));
+  },
+
+  continueDebug: () => {
+    const state = get();
+    const { trace, traceIndex, breakpoints } = state.debuggerState;
+    if (!state.debuggerState.isPaused || trace.length === 0) return;
+
+    const bpLines = new Set(
+      Array.from(breakpoints.values())
+        .filter(bp => bp.enabled)
+        .map(bp => bp.line)
+    );
+
+    // Find next breakpoint after current position
+    let nextIdx = traceIndex + 1;
+    while (nextIdx < trace.length && !bpLines.has(trace[nextIdx].line)) {
+      nextIdx++;
+    }
+
+    if (nextIdx >= trace.length) {
+      // No more breakpoints - finished
+      set((s) => ({
+        debuggerState: {
+          ...s.debuggerState,
+          isRunning: false,
+          isPaused: false,
+          currentLine: -1,
+          stepMode: null
+        }
+      }));
+      return;
+    }
+
+    const event = trace[nextIdx];
+    const vars = buildVariableMap(event);
+    set((s) => ({
+      debuggerState: {
+        ...s.debuggerState,
+        traceIndex: nextIdx,
+        currentLine: event.line,
+        variables: vars,
+        callStack: event.callStack.map(name => ({
+          functionName: name,
+          fileName: 'main.rb',
+          line: event.line,
+          column: 1
+        })),
+        stepMode: null
       }
     }));
   }
 }));
+
+function buildVariableMap(event: TraceEvent): Map<string, import('@/types').Variable> {
+  const vars = new Map<string, import('@/types').Variable>();
+  for (const [name, value] of Object.entries(event.vars)) {
+    vars.set(name, {
+      name,
+      value,
+      type: typeof value,
+      expandable: false
+    });
+  }
+  return vars;
+}

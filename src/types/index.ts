@@ -19,6 +19,12 @@ export interface Variable {
   expandable: boolean;
 }
 
+export interface TraceEvent {
+  line: number;
+  vars: Record<string, string>;
+  callStack: string[];
+}
+
 export interface DebuggerState {
   isRunning: boolean;
   isPaused: boolean;
@@ -27,6 +33,9 @@ export interface DebuggerState {
   callStack: StackFrame[];
   variables: Map<string, Variable>;
   stepMode: 'into' | 'over' | 'out' | null;
+  // Trace-based step debugger
+  trace: TraceEvent[];
+  traceIndex: number;
 }
 
 export interface ExecutionResult {

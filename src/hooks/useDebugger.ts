@@ -9,7 +9,9 @@ export const useDebugger = () => {
     breakpoints: new Map(),
     callStack: [],
     variables: new Map(),
-    stepMode: null
+    stepMode: null,
+    trace: [],
+    traceIndex: -1
   });
 
   const toggleBreakpoint = useCallback((line: number) => {
