@@ -1,13 +1,15 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useRef, useEffect } from 'react';
 import { CodeEditor } from '@/components/Editor';
 import { Console } from '@/components/Console';
 import { Debugger } from '@/components/Debugger';
 import { useAppStore } from '@/store/useAppStore';
-import { Play, RotateCcw, Bug, Square } from 'lucide-react';
+import { getCodeSnippets } from '@/utils/codeFormatter';
+import { Play, RotateCcw, Bug, Square, ChevronDown } from 'lucide-react';
 
 export const App: React.FC = () => {
   const {
     code,
+    setCode,
     executeCode,
     isExecuting,
     clearOutput,
@@ -19,6 +21,20 @@ export const App: React.FC = () => {
   } = useAppStore();
 
   const [showDebugger, setShowDebugger] = useState(false);
+  const [showSnippets, setShowSnippets] = useState(false);
+  const snippetsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (snippetsRef.current && !snippetsRef.current.contains(e.target as Node)) {
+        setShowSnippets(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const snippets = getCodeSnippets();
 
   const handleRun = useCallback(() => {
     executeCode(code);
@@ -90,6 +106,33 @@ export const App: React.FC = () => {
               <RotateCcw className="w-4 h-4" />
               Clear
             </button>
+
+            <div className="relative" ref={snippetsRef}>
+              <button
+                onClick={() => setShowSnippets((v) => !v)}
+                className="flex items-center gap-1 px-3 py-1.5 md:px-4 md:py-2 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-sm md:text-base"
+                title="Insert code snippet"
+              >
+                Snippets
+                <ChevronDown className="w-3 h-3" />
+              </button>
+              {showSnippets && (
+                <div className="absolute right-0 top-full mt-1 bg-slate-800 border border-slate-600 rounded shadow-lg z-10 min-w-40">
+                  {snippets.map((s) => (
+                    <button
+                      key={s.name}
+                      className="w-full text-left px-4 py-2 text-sm hover:bg-slate-700 transition-colors"
+                      onClick={() => {
+                        setCode(s.code);
+                        setShowSnippets(false);
+                      }}
+                    >
+                      {s.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <button
               onClick={() => setShowDebugger((v) => !v)}
