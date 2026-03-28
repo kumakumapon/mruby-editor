@@ -88,16 +88,26 @@ export const Console: React.FC = () => {
         </div>
       )}
 
-      <div className="console-input flex items-center gap-2 px-3 py-2 bg-slate-800 border-t border-slate-700">
-        <span className="text-cyan-400 select-none">stdin&gt;</span>
-        <input
-          type="text"
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          onKeyDown={handleInputKeyDown}
-          placeholder="Type input for gets/readline, then press Enter..."
-          className="flex-1 bg-transparent text-slate-100 placeholder-slate-500 outline-none text-xs"
-        />
+      <div className="console-input flex flex-col bg-slate-800 border-t border-slate-700">
+        <div className="flex items-center justify-between px-3 pt-1">
+          <span className="text-xs text-slate-400">
+            stdin — pre-type lines below before running (<code className="text-cyan-400">gets</code>/<code className="text-cyan-400">readline</code>)
+          </span>
+          {consoleInputLines.length > 0 && (
+            <span className="text-xs text-cyan-500">{consoleInputLines.length} line{consoleInputLines.length !== 1 ? 's' : ''} queued</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 px-3 py-2">
+          <span className="text-cyan-400 select-none">stdin&gt;</span>
+          <input
+            type="text"
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={handleInputKeyDown}
+            placeholder="Type a line and press Enter to queue it..."
+            className="flex-1 bg-transparent text-slate-100 placeholder-slate-500 outline-none text-xs"
+          />
+        </div>
       </div>
     </div>
   );
