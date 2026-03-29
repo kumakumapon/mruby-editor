@@ -1,10 +1,10 @@
-import React, { useCallback, useState, useRef, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { CodeEditor } from '@/components/Editor';
 import { Console } from '@/components/Console';
 import { Debugger } from '@/components/Debugger';
+import { ExamplesModal } from '@/components/ExamplesModal';
 import { useAppStore } from '@/store/useAppStore';
-import { getCodeSnippets } from '@/utils/codeFormatter';
-import { Play, RotateCcw, Bug, Square, ChevronDown } from 'lucide-react';
+import { Play, RotateCcw, Bug, Square, BookOpen, Share2, Upload, Download } from 'lucide-react';
 
 export const App: React.FC = () => {
   const {
@@ -21,20 +21,23 @@ export const App: React.FC = () => {
   } = useAppStore();
 
   const [showDebugger, setShowDebugger] = useState(false);
-  const [showSnippets, setShowSnippets] = useState(false);
-  const snippetsRef = useRef<HTMLDivElement>(null);
+  const [showExamples, setShowExamples] = useState(false);
+  const [shareToast, setShareToast] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // URLハッシュからコードを復元
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (snippetsRef.current && !snippetsRef.current.contains(e.target as Node)) {
-        setShowSnippets(false);
+    const hash = window.location.hash.slice(1);
+    if (hash) {
+      try {
+        const decoded = decodeURIComponent(atob(hash));
+        setCode(decoded);
+        window.history.replaceState(null, '', window.location.pathname);
+      } catch {
+        // 無効なハッシュは無視
       }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const snippets = getCodeSnippets();
+    }
+  }, [setCode]);
 
   const handleRun = useCallback(() => {
     executeCode(code);
@@ -54,8 +57,62 @@ export const App: React.FC = () => {
     clearConsole();
   }, [clearOutput, clearConsole]);
 
+  const handleShare = useCallback(() => {
+    const encoded = btoa(encodeURIComponent(code));
+    const url = `${window.location.origin}${window.location.pathname}#${encoded}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setShareToast('URLをコピーしました！');
+      setTimeout(() => setShareToast(null), 2500);
+    }).catch(() => {
+      // clipboard API が使えない場合はURLを表示
+      setShareToast(url.length > 60 ? url.slice(0, 60) + '…' : url);
+      setTimeout(() => setShareToast(null), 4000);
+    });
+  }, [code]);
+
+  const handleDownload = useCallback(() => {
+    const blob = new Blob([code], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'code.rb';
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [code]);
+
+  const handleUpload = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string;
+      if (text) setCode(text);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  }, [setCode]);
+
   return (
     <div className="app h-screen flex flex-col bg-slate-950 text-slate-100">
+      {showExamples && (
+        <ExamplesModal
+          onClose={() => setShowExamples(false)}
+          onLoad={(c) => setCode(c)}
+        />
+      )}
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".rb,.txt"
+        className="hidden"
+        onChange={handleFileChange}
+      />
+
       <header className="app-header bg-gradient-to-r from-slate-900 to-slate-800 border-b border-slate-700 px-3 md:px-6 py-3 md:py-4">
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-2 mr-auto">
@@ -107,32 +164,41 @@ export const App: React.FC = () => {
               Clear
             </button>
 
-            <div className="relative" ref={snippetsRef}>
-              <button
-                onClick={() => setShowSnippets((v) => !v)}
-                className="flex items-center gap-1 px-3 py-1.5 md:px-4 md:py-2 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-sm md:text-base"
-                title="Insert code snippet"
-              >
-                Snippets
-                <ChevronDown className="w-3 h-3" />
-              </button>
-              {showSnippets && (
-                <div className="absolute right-0 top-full mt-1 bg-slate-800 border border-slate-600 rounded shadow-lg z-10 min-w-40">
-                  {snippets.map((s) => (
-                    <button
-                      key={s.name}
-                      className="w-full text-left px-4 py-2 text-sm hover:bg-slate-700 transition-colors"
-                      onClick={() => {
-                        setCode(s.code);
-                        setShowSnippets(false);
-                      }}
-                    >
-                      {s.name}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            <div className="w-px bg-slate-600 self-stretch hidden sm:block" />
+
+            <button
+              onClick={() => setShowExamples(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 md:px-4 md:py-2 bg-indigo-700 hover:bg-indigo-600 rounded transition-colors text-sm md:text-base"
+              title="サンプルコードを開く"
+            >
+              <BookOpen className="w-4 h-4" />
+              <span className="hidden sm:inline">Examples</span>
+            </button>
+
+            <button
+              onClick={handleShare}
+              className="flex items-center gap-1.5 px-3 py-1.5 md:px-4 md:py-2 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-sm md:text-base"
+              title="URLでシェア"
+            >
+              <Share2 className="w-4 h-4" />
+              <span className="hidden sm:inline">Share</span>
+            </button>
+
+            <button
+              onClick={handleUpload}
+              className="flex items-center gap-1.5 px-3 py-1.5 md:px-4 md:py-2 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-sm md:text-base"
+              title=".rbファイルを開く"
+            >
+              <Upload className="w-4 h-4" />
+            </button>
+
+            <button
+              onClick={handleDownload}
+              className="flex items-center gap-1.5 px-3 py-1.5 md:px-4 md:py-2 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-sm md:text-base"
+              title="code.rb としてダウンロード"
+            >
+              <Download className="w-4 h-4" />
+            </button>
 
             <button
               onClick={() => setShowDebugger((v) => !v)}
@@ -145,6 +211,12 @@ export const App: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {shareToast && (
+          <div className="mt-2 flex items-center gap-2 text-sm text-blue-300 bg-blue-900/30 px-3 py-1.5 rounded w-fit">
+            ✓ {shareToast}
+          </div>
+        )}
 
         {isExecuting && !debuggerState.isRunning && (
           <div className="mt-2 flex items-center gap-2 text-sm text-yellow-400">
@@ -159,7 +231,7 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {lastResult && !isExecuting && !debuggerState.isPaused && (
+        {lastResult && !isExecuting && !debuggerState.isPaused && !shareToast && (
           <div
             className={`mt-2 text-sm ${
               lastResult.success ? 'text-green-400' : 'text-red-400'
