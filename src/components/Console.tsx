@@ -73,12 +73,6 @@ export const Console: React.FC = () => {
           </div>
         ))}
 
-        {lastResult?.error && (
-          <div className="text-red-400 whitespace-pre-wrap break-words">
-            ❌ {lastResult.error}
-          </div>
-        )}
-
         <div ref={endRef} />
       </div>
 
