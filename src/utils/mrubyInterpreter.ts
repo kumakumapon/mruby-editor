@@ -249,7 +249,16 @@ class MrubyInterpreter {
       }
 
       if (/^raise\s+/.test(line)) {
-        const msg = this.evalExpression(line.replace(/^raise\s+/, '').trim());
+        let msgStr = line.replace(/^raise\s+/, '').trim();
+        const postfixRaise = this.splitPostfixModifier(msgStr);
+        if (postfixRaise) {
+          const condOk = postfixRaise.modifier === 'if'
+            ? this.isTruthy(this.evalExpression(postfixRaise.cond))
+            : !this.isTruthy(this.evalExpression(postfixRaise.cond));
+          if (!condOk) { i++; continue; }
+          msgStr = postfixRaise.stmt;
+        }
+        const msg = this.evalExpression(msgStr);
         throw new RubyException(String(msg));
       }
 
@@ -273,7 +282,15 @@ class MrubyInterpreter {
       }
 
       if (/^return(\s+|$)/.test(line)) {
-        const val = line.replace(/^return\s*/, '').trim();
+        let val = line.replace(/^return\s*/, '').trim();
+        const postfixReturn = this.splitPostfixModifier(val);
+        if (postfixReturn) {
+          const condOk = postfixReturn.modifier === 'if'
+            ? this.isTruthy(this.evalExpression(postfixReturn.cond))
+            : !this.isTruthy(this.evalExpression(postfixReturn.cond));
+          if (!condOk) { i++; continue; }
+          val = postfixReturn.stmt;
+        }
         const retVal = val ? this.evalExpression(val) : null;
         throw new ReturnException(retVal);
       }
@@ -298,10 +315,291 @@ class MrubyInterpreter {
         continue;
       }
 
+      // Multi-line do...end block (e.g., 5.times do |i|, arr.each do |x|)
+      const doHeader = line.match(/^(.*?)\s+do(\s*\|[^|]*\|)?\s*$/);
+      if (doHeader && (doHeader[1].includes('.') || /^[\d(]/.test(doHeader[1]))) {
+        i = this.executeDoEndBlock(lines, i, end, lineNumBase + (i - start));
+        continue;
+      }
+
       lastValue = this.evalStatement(line);
       i++;
     }
     return lastValue;
+  }
+
+  private splitPostfixModifier(line: string): { stmt: string; modifier: 'if' | 'unless'; cond: string } | null {
+    let depth = 0, inStr = false, strChar = '';
+    let lastPos = -1;
+    let lastKeyword = '';
+
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (!inStr && (ch === '"' || ch === "'")) { inStr = true; strChar = ch; continue; }
+      if (inStr && ch === strChar && (i === 0 || line[i - 1] !== '\\')) { inStr = false; continue; }
+      if (inStr) continue;
+      if (ch === '(' || ch === '[' || ch === '{') { depth++; continue; }
+      if (ch === ')' || ch === ']' || ch === '}') { depth--; continue; }
+      if (depth === 0) {
+        if (line.substring(i, i + 4) === ' if ') { lastPos = i; lastKeyword = 'if'; }
+        else if (line.substring(i, i + 8) === ' unless ') { lastPos = i; lastKeyword = 'unless'; }
+      }
+    }
+
+    if (lastPos >= 0) {
+      const kwLen = lastKeyword === 'if' ? 4 : 8;
+      const stmt = line.substring(0, lastPos).trim();
+      const cond = line.substring(lastPos + kwLen).trim();
+      if (stmt && cond) return { stmt, modifier: lastKeyword as 'if' | 'unless', cond };
+    }
+    return null;
+  }
+
+  private executeDoEndBlock(lines: string[], start: number, end: number, lineNumBase: number): number {
+    const headerLine = lines[start].trim();
+    const doMatch = headerLine.match(/^(.*?)\s+do(\s*\|([^|]*)\|)?\s*$/);
+    if (!doMatch) return start + 1;
+
+    const rawCallExpr = doMatch[1].trim();
+    const blockParamsStr = doMatch[3] || '';
+    const blockParams = blockParamsStr ? blockParamsStr.split(',').map(p => p.trim()).filter(Boolean) : [];
+
+    // Collect body lines until matching 'end'
+    const body: string[] = [];
+    const bodyLineBase = lineNumBase + 1;
+    let depth = 1;
+    let i = start + 1;
+
+    while (i < lines.length) {
+      const l = lines[i].trim();
+      if (/^(if|unless|while|for|begin|def|class|case|loop)\b/.test(l)) {
+        depth++;
+      } else if (/\bdo(\s*\|[^|]*\|)?\s*$/.test(l)) {
+        depth++;
+      }
+      if (/^end\b/.test(l)) {
+        depth--;
+        if (depth === 0) break;
+      }
+      body.push(lines[i]);
+      i++;
+    }
+
+    // Create runBlock function for multi-line body
+    const runBlock = (params: MrubyValue[]): MrubyValue => {
+      const blockEnv = new Environment(this.env);
+      for (let pi = 0; pi < blockParams.length; pi++) {
+        blockEnv.set(blockParams[pi], params[pi] ?? null);
+      }
+      const savedEnv = this.env;
+      this.env = blockEnv;
+      let blockResult: MrubyValue = null;
+      try {
+        blockResult = this.executeBlock(body, 0, body.length, bodyLineBase);
+      } catch (e) {
+        this.env = savedEnv;
+        throw e;
+      }
+      this.env = savedEnv;
+      for (const [k, v] of blockEnv.getVars()) {
+        if (!blockParams.includes(k)) this.env.set(k, v);
+      }
+      return blockResult;
+    };
+
+    // Handle optional assignment: "result = arr.map do |n|"
+    let resultVar: string | null = null;
+    let callExpr = rawCallExpr;
+    const simpleAssignMatch = rawCallExpr.match(/^([a-zA-Z_@$]\w*)\s*=\s*(.+)$/);
+    if (simpleAssignMatch) {
+      resultVar = simpleAssignMatch[1];
+      callExpr = simpleAssignMatch[2].trim();
+    }
+
+    // Find object and method from call expression
+    const dotPos = this.findLastDot(callExpr);
+    if (dotPos < 0) return i + 1;
+
+    const objExpr = callExpr.substring(0, dotPos).trim();
+    const methodPart = callExpr.substring(dotPos + 1).trim();
+    const methodMatch = methodPart.match(/^(\w+[\?!]?)\s*(?:\((.*)\))?$/);
+    if (!methodMatch) return i + 1;
+
+    const methodName = methodMatch[1];
+    const methodArgsStr = methodMatch[2] || '';
+    const methodArgs = methodArgsStr ? this.splitArgs(methodArgsStr).map(a => this.evalExpression(a)) : [];
+    const obj = this.evalExpression(objExpr);
+
+    let result: MrubyValue = null;
+
+    if (typeof obj === 'number') {
+      if (methodName === 'times') {
+        for (let j = 0; j < obj; j++) {
+          this.checkIterations();
+          try { runBlock([j]); } catch (e) {
+            if (e instanceof BreakException) break;
+            if (e instanceof NextException) continue;
+            throw e;
+          }
+        }
+        result = obj;
+      } else if (methodName === 'upto') {
+        const to = typeof methodArgs[0] === 'number' ? methodArgs[0] : parseInt(String(methodArgs[0]));
+        for (let j = obj; j <= to; j++) {
+          this.checkIterations();
+          try { runBlock([j]); } catch (e) {
+            if (e instanceof BreakException) break;
+            if (e instanceof NextException) continue;
+            throw e;
+          }
+        }
+        result = obj;
+      } else if (methodName === 'downto') {
+        const to = typeof methodArgs[0] === 'number' ? methodArgs[0] : parseInt(String(methodArgs[0]));
+        for (let j = obj; j >= to; j--) {
+          this.checkIterations();
+          try { runBlock([j]); } catch (e) {
+            if (e instanceof BreakException) break;
+            if (e instanceof NextException) continue;
+            throw e;
+          }
+        }
+        result = obj;
+      }
+    } else if (Array.isArray(obj)) {
+      switch (methodName) {
+        case 'each': {
+          for (const item of obj) {
+            this.checkIterations();
+            try { runBlock([item]); } catch (e) {
+              if (e instanceof BreakException) break;
+              if (e instanceof NextException) continue;
+              throw e;
+            }
+          }
+          result = obj;
+          break;
+        }
+        case 'each_with_index': {
+          for (let j = 0; j < obj.length; j++) {
+            this.checkIterations();
+            try { runBlock([obj[j], j]); } catch (e) {
+              if (e instanceof BreakException) break;
+              if (e instanceof NextException) continue;
+              throw e;
+            }
+          }
+          result = obj;
+          break;
+        }
+        case 'each_with_object': {
+          const accumulator = methodArgs[0] ?? null;
+          for (const item of obj) {
+            this.checkIterations();
+            try { runBlock([item, accumulator]); } catch (e) {
+              if (e instanceof BreakException) break;
+              if (e instanceof NextException) continue;
+              throw e;
+            }
+          }
+          result = accumulator;
+          break;
+        }
+        case 'map': case 'collect': {
+          const mapped: MrubyValue[] = [];
+          for (const item of obj) {
+            this.checkIterations();
+            mapped.push(runBlock([item]));
+          }
+          result = mapped;
+          break;
+        }
+        case 'select': case 'filter': {
+          result = obj.filter(item => { this.checkIterations(); return this.isTruthy(runBlock([item])); });
+          break;
+        }
+        case 'reject': {
+          result = obj.filter(item => { this.checkIterations(); return !this.isTruthy(runBlock([item])); });
+          break;
+        }
+        case 'reduce': case 'inject': {
+          if (methodArgs.length > 0) {
+            result = obj.reduce((acc, item) => { this.checkIterations(); return runBlock([acc, item]); }, methodArgs[0]);
+          } else if (blockParams.length >= 2) {
+            result = obj.reduce((acc, item) => { this.checkIterations(); return runBlock([acc, item]); });
+          }
+          break;
+        }
+        default: {
+          result = obj;
+        }
+      }
+    } else if (obj && typeof obj === 'object' && '__type' in obj && (obj as MrubyHash).__type === 'hash') {
+      const hash = obj as MrubyHash;
+      switch (methodName) {
+        case 'each': case 'each_pair': {
+          for (const [k, v] of hash.data) {
+            this.checkIterations();
+            try { runBlock([k, v]); } catch (e) {
+              if (e instanceof BreakException) break;
+              if (e instanceof NextException) continue;
+              throw e;
+            }
+          }
+          result = obj;
+          break;
+        }
+        case 'each_key': {
+          for (const k of hash.data.keys()) {
+            this.checkIterations();
+            try { runBlock([k]); } catch (e) {
+              if (e instanceof BreakException) break;
+              throw e;
+            }
+          }
+          result = obj;
+          break;
+        }
+        case 'each_value': {
+          for (const v of hash.data.values()) {
+            this.checkIterations();
+            try { runBlock([v]); } catch (e) {
+              if (e instanceof BreakException) break;
+              throw e;
+            }
+          }
+          result = obj;
+          break;
+        }
+        case 'map': case 'collect': {
+          result = Array.from(hash.data.entries()).map(([k, v]) => { this.checkIterations(); return runBlock([k, v]); });
+          break;
+        }
+        case 'select': case 'filter': {
+          const sel: MrubyHash = { __type: 'hash', data: new Map() };
+          for (const [k, v] of hash.data) {
+            if (this.isTruthy(runBlock([k, v]))) sel.data.set(k, v);
+          }
+          result = sel;
+          break;
+        }
+        default: {
+          result = obj;
+        }
+      }
+    } else if (obj && typeof obj === 'object' && '__type' in obj && (obj as MrubyInstance).__type === 'instance') {
+      const instance = obj as MrubyInstance;
+      const instMethod = this.lookupInstanceMethod(instance, methodName);
+      if (instMethod) {
+        result = this.executeInstanceMethod(instance, instMethod, methodArgs);
+      }
+    }
+
+    if (resultVar !== null) {
+      this.assignVar(resultVar, result);
+    }
+
+    return i + 1;
   }
 
   private checkIterations(): void {
@@ -313,7 +611,7 @@ class MrubyInterpreter {
 
   private defineMethod(lines: string[], start: number, origIdx: number): number {
     const defLine = lines[start].trim();
-    const match = defLine.match(/^def\s+(\w+)\s*(?:\((.*?)\))?\s*$/);
+    const match = defLine.match(/^def\s+(\w+[\?!]?)\s*(?:\((.*?)\))?\s*$/);
     if (!match) { return start + 1; }
     const name = match[1];
     const paramStr = match[2] || '';
@@ -325,7 +623,11 @@ class MrubyInterpreter {
     let i = start + 1;
     while (i < lines.length && depth > 0) {
       const l = lines[i].trim();
-      if (/^def\s+/.test(l)) depth++;
+      if (/^(if|unless|while|for|begin|def|class|case|loop)\b/.test(l)) {
+        depth++;
+      } else if (/\bdo(\s*\|[^|]*\|)?\s*$/.test(l)) {
+        depth++;
+      }
       if (/^end\b/.test(l)) {
         depth--;
         if (depth === 0) break;
@@ -401,7 +703,11 @@ class MrubyInterpreter {
 
     while (i < lines.length && depth > 0) {
       const l = lines[i].trim();
-      if (/^def\s+/.test(l)) depth++;
+      if (/^(if|unless|while|for|begin|def|class|case|loop)\b/.test(l)) {
+        depth++;
+      } else if (/\bdo(\s*\|[^|]*\|)?\s*$/.test(l)) {
+        depth++;
+      }
       if (/^end\b/.test(l)) {
         depth--;
         if (depth === 0) break;
@@ -496,7 +802,9 @@ class MrubyInterpreter {
     let i = start + 1;
     while (i < end) {
       const l = lines[i].trim();
-      if (/^(if|unless|while|for|begin|def|class)\b/.test(l)) {
+      const isKeywordBlock = /^(if|unless|while|for|begin|def|class|case|loop)\b/.test(l);
+      const isDoEndStart = !isKeywordBlock && /\bdo(\s*\|[^|]*\|)?\s*$/.test(l);
+      if (isKeywordBlock || isDoEndStart) {
         depth++;
         if (currentBranch.lineBase < 0 && l) currentBranch.lineBase = startOrig + (i - start);
         currentBranch.lines.push(lines[i]);
@@ -547,7 +855,7 @@ class MrubyInterpreter {
   }
 
   private executeWhile(lines: string[], start: number, end: number, startOrig: number = start): number {
-    const condStr = lines[start].trim().replace(/^while\s+/, '').trim();
+    const condStr = lines[start].trim().replace(/^while\s+/, '').trim().replace(/\s+do\s*$/, '');
 
     const body: string[] = [];
     let bodyLineBase = -1;
@@ -555,7 +863,11 @@ class MrubyInterpreter {
     let i = start + 1;
     while (i < end) {
       const l = lines[i].trim();
-      if (/^(if|unless|while|for|begin|def)\b/.test(l)) depth++;
+      if (/^(if|unless|while|for|begin|def|class|case|loop)\b/.test(l)) {
+        depth++;
+      } else if (/\bdo(\s*\|[^|]*\|)?\s*$/.test(l)) {
+        depth++;
+      }
       if (/^end\b/.test(l)) {
         depth--;
         if (depth === 0) break;
@@ -597,7 +909,11 @@ class MrubyInterpreter {
     let i = start + 1;
     while (i < end) {
       const l = lines[i].trim();
-      if (/^(if|unless|while|for|begin|def)\b/.test(l)) depth++;
+      if (/^(if|unless|while|for|begin|def|class|case|loop)\b/.test(l)) {
+        depth++;
+      } else if (/\bdo(\s*\|[^|]*\|)?\s*$/.test(l)) {
+        depth++;
+      }
       if (/^end\b/.test(l)) {
         depth--;
         if (depth === 0) break;
@@ -637,18 +953,25 @@ class MrubyInterpreter {
     let beginBodyLineBase = -1;
     let rescueBodyLineBase = -1;
     let ensureBodyLineBase = -1;
+    let rescueVarName: string | null = null;
     let depth = 1;
     let i = start + 1;
 
     while (i < end) {
       const l = lines[i].trim();
-      if (/^(begin|if|unless|while|def)\b/.test(l)) depth++;
+      if (/^(begin|if|unless|while|for|def|class|case|loop)\b/.test(l)) {
+        depth++;
+      } else if (/\bdo(\s*\|[^|]*\|)?\s*$/.test(l)) {
+        depth++;
+      }
       if (/^end\b/.test(l)) {
         depth--;
         if (depth === 0) break;
       }
       if (depth === 1 && /^rescue\b/.test(l)) {
         section = 'rescue';
+        const rescueMatch = l.match(/^rescue(?:\s+[A-Z]\w*)?\s*=>\s*(\w+)/);
+        if (rescueMatch) rescueVarName = rescueMatch[1];
         i++;
         continue;
       }
@@ -678,6 +1001,10 @@ class MrubyInterpreter {
       if (rescueBody.length > 0) {
         if (e instanceof RubyException) {
           this.env.set('$!', e.message);
+          if (rescueVarName) this.env.set(rescueVarName, e.message);
+        } else if (e instanceof Error) {
+          this.env.set('$!', e.message);
+          if (rescueVarName) this.env.set(rescueVarName, e.message);
         }
         this.executeBlock(rescueBody, 0, rescueBody.length, rescueBodyLineBase >= 0 ? rescueBodyLineBase : 0);
         // ensure always runs after rescue
@@ -713,7 +1040,9 @@ class MrubyInterpreter {
 
     while (i < end) {
       const l = lines[i].trim();
-      if (/^(if|unless|while|for|begin|def|class|case)\b/.test(l)) {
+      const isKeywordBlock = /^(if|unless|while|for|begin|def|class|case|loop)\b/.test(l);
+      const isDoEndStart = !isKeywordBlock && /\bdo(\s*\|[^|]*\|)?\s*$/.test(l);
+      if (isKeywordBlock || isDoEndStart) {
         depth++;
         if (currentBranch) {
           if (currentBranch.lineBase < 0 && l) currentBranch.lineBase = startOrig + (i - start);
@@ -785,7 +1114,11 @@ class MrubyInterpreter {
 
     while (i < end) {
       const l = lines[i].trim();
-      if (/^(if|unless|while|for|begin|def|loop|case)\b/.test(l)) depth++;
+      if (/^(if|unless|while|for|begin|def|class|loop|case)\b/.test(l)) {
+        depth++;
+      } else if (/\bdo(\s*\|[^|]*\|)?\s*$/.test(l)) {
+        depth++;
+      }
       if (/^end\b/.test(l)) {
         depth--;
         if (depth === 0) break;
@@ -996,24 +1329,41 @@ class MrubyInterpreter {
       return null;
     }
 
+    // Handle postfix if/unless modifiers (e.g., arr.push(x) if cond, puts "hi" unless cond)
+    const postfixMod = this.splitPostfixModifier(line);
+    if (postfixMod) {
+      const condOk = postfixMod.modifier === 'if'
+        ? this.isTruthy(this.evalExpression(postfixMod.cond))
+        : !this.isTruthy(this.evalExpression(postfixMod.cond));
+      if (!condOk) return null;
+      return this.evalStatement(postfixMod.stmt);
+    }
+
     // Handle output functions in block bodies
     if (/^puts(\s+|$|\()/.test(line)) { this.executePuts(line); return null; }
     if (/^print(\s+|$|\()/.test(line)) { this.executePrint(line); return null; }
     // Only treat 'p' as a function call when followed by space/( and not an assignment
     if (/^p(\s+|\()/.test(line) && !/^p\s*[+*/%=-]?=/.test(line)) { this.executeP(line); return null; }
 
-    const multiAssignMatch = line.match(/^([a-zA-Z_@$][\w,\s]*)\s*=\s*(.+)$/);
-    if (multiAssignMatch) {
-      const lhs = multiAssignMatch[1];
-      const rhs = multiAssignMatch[2];
-      if (lhs.includes(',')) {
-        const vars = lhs.split(',').map(v => v.trim());
-        const vals = this.evalExpression(rhs);
-        const arr = Array.isArray(vals) ? vals : [vals];
-        for (let idx = 0; idx < vars.length; idx++) {
-          this.assignVar(vars[idx], arr[idx] !== undefined ? arr[idx] : null);
+    // Enhanced multi-assignment: handles array elements on LHS (e.g., arr[i], arr[j] = arr[j], arr[i])
+    const eqIdx = this.findNakedEquals(line);
+    if (eqIdx > 0) {
+      const lhsStr = line.substring(0, eqIdx).trim();
+      const rhsStr = line.substring(eqIdx + 1).trim();
+      if (lhsStr.includes(',')) {
+        const lhsItems = this.splitArgs(lhsStr);
+        if (lhsItems.length > 1) {
+          // Evaluate all RHS values first (before any assignments, for correct swap semantics)
+          const rhsArgs = this.splitArgs(rhsStr);
+          const rhsVals = rhsArgs.map(e => this.evalExpression(e.trim()));
+          const rhsArr: MrubyValue[] = rhsVals.length === 1 && Array.isArray(rhsVals[0])
+            ? rhsVals[0] as MrubyValue[]
+            : rhsVals;
+          for (let idx = 0; idx < lhsItems.length; idx++) {
+            this.assignLhsItem(lhsItems[idx].trim(), rhsArr[idx] !== undefined ? rhsArr[idx] : null);
+          }
+          return null;
         }
-        return null;
       }
     }
 
@@ -1025,9 +1375,15 @@ class MrubyInterpreter {
       const val = this.evalExpression(valExpr);
       
       if (op === '=') {
-        const arrMatch = varName.match(/^(\w+)\[(.+)\]$/);
+        const arrMatch = varName.match(/^(@?\w+)\[(.+)\]$/);
         if (arrMatch) {
-          const arr = this.env.get(arrMatch[1]);
+          const objName = arrMatch[1];
+          let arr: MrubyValue;
+          if (objName.startsWith('@')) {
+            arr = this.currentSelf ? this.currentSelf.instanceVars.get(objName.slice(1)) ?? null : null;
+          } else {
+            arr = this.env.get(objName);
+          }
           const idx = this.evalExpression(arrMatch[2]);
           if (Array.isArray(arr) && typeof idx === 'number') {
             arr[idx] = val;
@@ -1058,6 +1414,49 @@ class MrubyInterpreter {
     }
 
     return this.evalExpression(line);
+  }
+
+  private findNakedEquals(line: string): number {
+    let inStr = false, strChar = '', depth = 0;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (!inStr && (ch === '"' || ch === "'")) { inStr = true; strChar = ch; continue; }
+      if (inStr && ch === strChar && (i === 0 || line[i - 1] !== '\\')) { inStr = false; continue; }
+      if (inStr) continue;
+      if (ch === '(' || ch === '[' || ch === '{') { depth++; continue; }
+      if (ch === ')' || ch === ']' || ch === '}') { depth--; continue; }
+      if (depth === 0 && ch === '=') {
+        const prev = i > 0 ? line[i - 1] : '';
+        const next = i < line.length - 1 ? line[i + 1] : '';
+        if (prev !== '!' && prev !== '<' && prev !== '>' && prev !== '=' &&
+            prev !== '+' && prev !== '-' && prev !== '*' && prev !== '/' && prev !== '%' &&
+            next !== '=') {
+          return i;
+        }
+      }
+    }
+    return -1;
+  }
+
+  private assignLhsItem(lhsItem: string, value: MrubyValue): void {
+    const arrMatch = lhsItem.match(/^(@?\w+)\[(.+)\]$/);
+    if (arrMatch) {
+      const objName = arrMatch[1];
+      let obj: MrubyValue;
+      if (objName.startsWith('@')) {
+        obj = this.currentSelf ? this.currentSelf.instanceVars.get(objName.slice(1)) ?? null : null;
+      } else {
+        obj = this.env.get(objName);
+      }
+      const idx = this.evalExpression(arrMatch[2]);
+      if (Array.isArray(obj) && typeof idx === 'number') {
+        obj[idx] = value;
+      } else if (obj && typeof obj === 'object' && '__type' in obj && (obj as MrubyHash).__type === 'hash') {
+        (obj as MrubyHash).data.set(String(idx), value);
+      }
+    } else {
+      this.assignVar(lhsItem, value);
+    }
   }
 
   private assignVar(name: string, value: MrubyValue): void {
@@ -1239,19 +1638,25 @@ class MrubyInterpreter {
       return arr;
     }
 
-    const funcCallMatch = expr.match(/^([a-zA-Z_]\w*)\s*\((.*)\)\s*$/);
+    const funcCallMatch = expr.match(/^([a-zA-Z_]\w*[\?!]?)\s*\((.*)\)\s*$/);
     if (funcCallMatch) {
       return this.callMethod(funcCallMatch[1], funcCallMatch[2]);
     }
 
-    const funcNoParens = expr.match(/^([a-zA-Z_]\w+)\s+(.+)$/);
+    const funcNoParens = expr.match(/^([a-zA-Z_]\w+[\?!]?)\s+(.+)$/);
     if (funcNoParens && this.methods.has(funcNoParens[1])) {
       return this.callMethod(funcNoParens[1], funcNoParens[2]);
     }
 
-    const indexMatch = expr.match(/^(\w+)\[(.+)\]$/);
+    const indexMatch = expr.match(/^(@?\w+)\[(.+)\]$/);
     if (indexMatch) {
-      const obj = this.env.get(indexMatch[1]);
+      const objName = indexMatch[1];
+      let obj: MrubyValue;
+      if (objName.startsWith('@')) {
+        obj = this.currentSelf ? this.currentSelf.instanceVars.get(objName.slice(1)) ?? null : null;
+      } else {
+        obj = this.env.get(objName);
+      }
       const idx = this.evalExpression(indexMatch[2]);
       if (Array.isArray(obj)) {
         const numIdx = typeof idx === 'number' ? idx : parseInt(String(idx));
@@ -1277,7 +1682,7 @@ class MrubyInterpreter {
       if (cls) return cls;
     }
 
-    if (/^[a-zA-Z_$][\w]*$/.test(expr)) {
+    if (/^[a-zA-Z_$][\w]*[\?!]?$/.test(expr)) {
       // Check user-defined methods first (bare call without parens/args)
       if (this.methods.has(expr)) return this.callMethod(expr, '');
       const envVal = this.env.get(expr);
