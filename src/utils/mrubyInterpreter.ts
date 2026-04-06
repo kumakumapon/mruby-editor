@@ -1367,7 +1367,7 @@ class MrubyInterpreter {
       }
     }
 
-    const compoundMatch = line.match(/^([a-zA-Z_@$][\w]*(?:\[.*?\])?)\s*([+\-*\/%]?=)\s*(.+)$/);
+    const compoundMatch = line.match(/^([a-zA-Z_@$][\w]*(?:\[.*?\])?)\s*([+\-*\/%]?=)(?!=)\s*(.+)$/);
     if (compoundMatch) {
       const varName = compoundMatch[1];
       const op = compoundMatch[2];
@@ -1496,28 +1496,71 @@ class MrubyInterpreter {
     if (/^-?\d+$/.test(expr)) return parseInt(expr, 10);
     if (/^-?\d+\.\d+$/.test(expr)) return parseFloat(expr);
 
-    if (expr.startsWith('"') && expr.endsWith('"')) {
-      return this.interpolateString(expr.slice(1, -1));
+    if (expr.startsWith('"')) {
+      // Find matching close quote
+      let closePos = 1;
+      while (closePos < expr.length) {
+        if (expr[closePos] === '"' && expr[closePos - 1] !== '\\') break;
+        closePos++;
+      }
+      if (closePos === expr.length - 1) {
+        return this.interpolateString(expr.slice(1, -1));
+      }
     }
 
-    if (expr.startsWith("'") && expr.endsWith("'")) {
-      return expr.slice(1, -1);
+    if (expr.startsWith("'")) {
+      // Find matching close quote
+      let closePos = 1;
+      while (closePos < expr.length) {
+        if (expr[closePos] === "'" && expr[closePos - 1] !== '\\') break;
+        closePos++;
+      }
+      if (closePos === expr.length - 1) {
+        return expr.slice(1, -1);
+      }
     }
 
     if (expr.startsWith(':')) {
       return expr.slice(1);
     }
 
-    if (expr.startsWith('[') && expr.endsWith(']')) {
-      return this.parseArray(expr);
+    if (expr.startsWith('[')) {
+      // Find matching close bracket to ensure whole expr is an array literal
+      let depth = 0, inStr = false, strChar = '', closePos = -1;
+      for (let i = 0; i < expr.length; i++) {
+        const ch = expr[i];
+        if (!inStr && (ch === '"' || ch === "'")) { inStr = true; strChar = ch; }
+        else if (inStr && ch === strChar && (i === 0 || expr[i-1] !== '\\')) { inStr = false; }
+        else if (!inStr && ch === '[') depth++;
+        else if (!inStr && ch === ']') { depth--; if (depth === 0) { closePos = i; break; } }
+      }
+      if (closePos === expr.length - 1) return this.parseArray(expr);
     }
 
-    if (expr.startsWith('{') && expr.endsWith('}')) {
-      return this.parseHash(expr);
+    if (expr.startsWith('{')) {
+      // Find matching close brace to ensure whole expr is a hash literal
+      let depth = 0, inStr = false, strChar = '', closePos = -1;
+      for (let i = 0; i < expr.length; i++) {
+        const ch = expr[i];
+        if (!inStr && (ch === '"' || ch === "'")) { inStr = true; strChar = ch; }
+        else if (inStr && ch === strChar && (i === 0 || expr[i-1] !== '\\')) { inStr = false; }
+        else if (!inStr && ch === '{') depth++;
+        else if (!inStr && ch === '}') { depth--; if (depth === 0) { closePos = i; break; } }
+      }
+      if (closePos === expr.length - 1) return this.parseHash(expr);
     }
 
-    if (expr.startsWith('(') && expr.endsWith(')')) {
-      return this.evalExpression(expr.slice(1, -1));
+    if (expr.startsWith('(')) {
+      // Find matching close paren to ensure whole expr is parenthesized
+      let depth = 0, inStr = false, strChar = '', closePos = -1;
+      for (let i = 0; i < expr.length; i++) {
+        const ch = expr[i];
+        if (!inStr && (ch === '"' || ch === "'")) { inStr = true; strChar = ch; }
+        else if (inStr && ch === strChar && (i === 0 || expr[i-1] !== '\\')) { inStr = false; }
+        else if (!inStr && ch === '(') depth++;
+        else if (!inStr && ch === ')') { depth--; if (depth === 0) { closePos = i; break; } }
+      }
+      if (closePos === expr.length - 1) return this.evalExpression(expr.slice(1, -1));
     }
 
     const orParts = this.splitBinary(expr, '||');
@@ -1563,8 +1606,8 @@ class MrubyInterpreter {
             }
             return null;
           }
-          case '==': return left === right;
-          case '!=': return left !== right;
+          case '==': return this.rubyEquals(left, right);
+          case '!=': return !this.rubyEquals(left, right);
           case '<': return (left as number) < (right as number);
           case '>': return (left as number) > (right as number);
           case '<=': return (left as number) <= (right as number);
@@ -1573,11 +1616,64 @@ class MrubyInterpreter {
       }
     }
 
+    // Bitwise OR (|) - lower precedence than comparisons
+    const bitOrParts = this.splitBinary(expr, '|');
+    if (bitOrParts) {
+      const left = this.evalExpression(bitOrParts[0]);
+      const right = this.evalExpression(bitOrParts[1]);
+      return ((left as number) | (right as number));
+    }
+
+    // Bitwise XOR (^)
+    const bitXorParts = this.splitBinary(expr, '^');
+    if (bitXorParts) {
+      const left = this.evalExpression(bitXorParts[0]);
+      const right = this.evalExpression(bitXorParts[1]);
+      return ((left as number) ^ (right as number));
+    }
+
+    // Bitwise AND (&)
+    const bitAndParts = this.splitBinary(expr, '&');
+    if (bitAndParts) {
+      const left = this.evalExpression(bitAndParts[0]);
+      const right = this.evalExpression(bitAndParts[1]);
+      return ((left as number) & (right as number));
+    }
+
+    // Left shift (<<) - also handles array append
+    const lshiftParts = this.splitBinary(expr, '<<');
+    if (lshiftParts) {
+      const left = this.evalExpression(lshiftParts[0]);
+      const right = this.evalExpression(lshiftParts[1]);
+      if (Array.isArray(left)) {
+        (left as MrubyValue[]).push(right);
+        return left;
+      }
+      if (typeof left === 'string') {
+        return left + String(right);
+      }
+      const n = left as number;
+      const shift = right as number;
+      if (shift < 0) return n >> (-shift);
+      return n << shift;
+    }
+
+    // Right shift (>>)
+    const rshiftParts = this.splitBinary(expr, '>>');
+    if (rshiftParts) {
+      const left = this.evalExpression(rshiftParts[0]) as number;
+      const right = this.evalExpression(rshiftParts[1]) as number;
+      if (right < 0) return left << (-right);
+      if (right >= 64) return left >= 0 ? 0 : -1;
+      return left >> right;
+    }
+
     const addParts = this.splitArithmetic(expr, ['+', '-']);
     if (addParts) {
       const left = this.evalExpression(addParts[0]);
       const right = this.evalExpression(addParts[2]);
       if (addParts[1] === '+') {
+        if (Array.isArray(left) && Array.isArray(right)) return [...left, ...right];
         if (typeof left === 'string' || typeof right === 'string') {
           return String(left) + String(right);
         }
@@ -1591,10 +1687,22 @@ class MrubyInterpreter {
     if (mulParts) {
       const left = this.evalExpression(mulParts[0]);
       const right = this.evalExpression(mulParts[2]);
+      const a = left as number;
+      const b = right as number;
       switch (mulParts[1]) {
-        case '*': return (left as number) * (right as number);
-        case '/': return (right as number) !== 0 ? Math.trunc((left as number) / (right as number)) : 0;
-        case '%': return (left as number) % (right as number);
+        case '*': {
+          if (typeof a === 'string' && Number.isInteger(b)) return a.repeat(Math.max(0, b));
+          return a * b;
+        }
+        case '/': {
+          if (b === 0) return 0;
+          if (Number.isInteger(a) && Number.isInteger(b)) return Math.floor(a / b);
+          return a / b;
+        }
+        case '%': {
+          if (Number.isInteger(a) && Number.isInteger(b)) return ((a % b) + b) % b;
+          return a % b;
+        }
       }
     }
 
@@ -1610,6 +1718,11 @@ class MrubyInterpreter {
     }
     if (expr.startsWith('not ')) {
       return !this.isTruthy(this.evalExpression(expr.slice(4)));
+    }
+    if (expr.startsWith('~')) {
+      const inner = this.evalExpression(expr.slice(1));
+      if (typeof inner === 'number') return ~inner;
+      return null;
     }
 
     if (expr.startsWith('-') && expr.length > 1) {
@@ -1715,8 +1828,8 @@ class MrubyInterpreter {
         const after = expr[i + opLen] || '';
         if (op === '=' && (before === '!' || before === '<' || before === '>' || before === '=')) continue;
         if (op === '=' && after === '=') continue;
-        if (op === '<' && (after === '=' || after === '<')) continue;
-        if (op === '>' && (after === '=' || after === '>')) continue;
+        if (op === '<' && (after === '=' || after === '<' || before === '<')) continue;
+        if (op === '>' && (after === '=' || after === '>' || before === '>')) continue;
         if (op === '!' && after === '=') continue;
         if (op === '&' && (before === '&' || after === '&')) continue;
         if (op === '|' && (before === '|' || after === '|')) continue;
@@ -1763,10 +1876,15 @@ class MrubyInterpreter {
         for (const op of ops) {
           if (expr[i] === op) {
             if ((op === '+' || op === '-') && i === 0) continue;
-            const prev = expr[i-1] || '';
-            if ((op === '+' || op === '-') && '+-*/(%'.includes(prev)) continue;
             if (op === '*' && expr[i+1] === '*') continue;
             if (op === '*' && i > 0 && expr[i-1] === '*') continue;
+            // For +/-, determine effective previous non-space character
+            if (op === '+' || op === '-') {
+              let j = i - 1;
+              while (j >= 0 && expr[j] === ' ') j--;
+              const effectivePrev = j >= 0 ? expr[j] : '';
+              if ('+-*/(%[,'.includes(effectivePrev) || effectivePrev === '') continue;
+            }
             lastPos = i;
             lastOp = op;
           }
@@ -2031,6 +2149,13 @@ class MrubyInterpreter {
         case 'clear': return '';
         case 'frozen?': return false;
         case 'nil?': return false;
+        case 'eql?': return obj === String(args[0]);
+        case '<=>': {
+          const other = args[0];
+          if (typeof other !== 'string') return null;
+          return obj < other ? -1 : obj > other ? 1 : 0;
+        }
+        case 'to_sym': return obj;
         case '*': {
           const n = typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]));
           return obj.repeat(n);
@@ -2073,15 +2198,27 @@ class MrubyInterpreter {
         }
         case 'ceil': return Math.ceil(obj);
         case 'truncate': return Math.trunc(obj);
+        case 'eql?': {
+          const other = args[0];
+          if (typeof other !== 'number') return false;
+          if (Number.isInteger(obj) !== Number.isInteger(other)) return false;
+          return obj === other;
+        }
         case 'divmod': {
           const n = typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]));
-          return [Math.floor(obj / n), obj % n];
+          const q = Math.floor(obj / n);
+          const r = obj - q * n;
+          return [q, r];
         }
         case 'div': {
           const n = typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]));
           return Math.floor(obj / n);
         }
-        case 'modulo': case 'remainder': {
+        case 'modulo': {
+          const n = typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]));
+          return ((obj % n) + n) % n;
+        }
+        case 'remainder': {
           const n = typeof args[0] === 'number' ? args[0] : parseInt(String(args[0]));
           return obj % n;
         }
@@ -2142,7 +2279,20 @@ class MrubyInterpreter {
         case 'push': case 'append': case '<<': obj.push(args[0] ?? null); return obj;
         case 'pop': return obj.pop() ?? null;
         case 'shift': return obj.shift() ?? null;
-        case 'unshift': obj.unshift(args[0] ?? null); return obj;
+        case 'unshift': obj.unshift(...(args.length > 0 ? args : [null])); return obj;
+        case 'clear': obj.splice(0, obj.length); return obj;
+        case 'replace': {
+          const other = args[0];
+          if (Array.isArray(other)) obj.splice(0, obj.length, ...other);
+          return obj;
+        }
+        case 'rindex': {
+          const target = args[0];
+          for (let i = obj.length - 1; i >= 0; i--) {
+            if (this.rubyEquals(obj[i], target)) return i;
+          }
+          return null;
+        }
         case 'reverse': return [...obj].reverse();
         case 'sort': return [...obj].sort((a, b) => {
           if (typeof a === 'number' && typeof b === 'number') return a - b;
@@ -2563,6 +2713,17 @@ class MrubyInterpreter {
           for (const item of obj) {
             this.checkIterations();
             try { runBlock([item]); } catch(e) {
+              if (e instanceof BreakException) break;
+              if (e instanceof NextException) continue;
+              throw e;
+            }
+          }
+          return obj;
+        }
+        case 'each_index': {
+          for (let i = 0; i < obj.length; i++) {
+            this.checkIterations();
+            try { runBlock([i]); } catch(e) {
               if (e instanceof BreakException) break;
               if (e instanceof NextException) continue;
               throw e;
@@ -3168,6 +3329,26 @@ class MrubyInterpreter {
 
   private isTruthy(val: MrubyValue): boolean {
     return val !== null && val !== false;
+  }
+
+  private rubyEquals(a: MrubyValue, b: MrubyValue): boolean {
+    if (a === b) return true;
+    if (Array.isArray(a) && Array.isArray(b)) {
+      if (a.length !== b.length) return false;
+      return a.every((x, i) => this.rubyEquals(x, b[i]));
+    }
+    if (a && b && typeof a === 'object' && '__type' in a && typeof b === 'object' && '__type' in b) {
+      const ha = a as MrubyHash;
+      const hb = b as MrubyHash;
+      if (ha.__type === 'hash' && hb.__type === 'hash') {
+        if (ha.data.size !== hb.data.size) return false;
+        for (const [k, v] of ha.data) {
+          if (!hb.data.has(k) || !this.rubyEquals(v, hb.data.get(k)!)) return false;
+        }
+        return true;
+      }
+    }
+    return false;
   }
 
   private sprintf(format: string, args: MrubyValue[]): string {
