@@ -146,7 +146,7 @@ describe('Integer#>> (15.2.8.3.13)', () => {
   });
 
   it('large right shift returns 0 for positive numbers', () => {
-    expect(run('puts(23 >> 128)')).toBe('0\n');
+    expect(run('puts(23 >> 32)')).toBe('0\n');
   });
 });
 

@@ -1664,7 +1664,7 @@ class MrubyInterpreter {
       const left = this.evalExpression(rshiftParts[0]) as number;
       const right = this.evalExpression(rshiftParts[1]) as number;
       if (right < 0) return left << (-right);
-      if (right >= 64) return left >= 0 ? 0 : -1;
+      if (right >= 32) return left >= 0 ? 0 : -1;
       return left >> right;
     }
 
@@ -1687,19 +1687,23 @@ class MrubyInterpreter {
     if (mulParts) {
       const left = this.evalExpression(mulParts[0]);
       const right = this.evalExpression(mulParts[2]);
-      const a = left as number;
-      const b = right as number;
       switch (mulParts[1]) {
         case '*': {
-          if (typeof a === 'string' && Number.isInteger(b)) return a.repeat(Math.max(0, b));
-          return a * b;
+          if (typeof left === 'string' && typeof right === 'number' && Number.isInteger(right)) {
+            return left.repeat(Math.max(0, right));
+          }
+          return (left as number) * (right as number);
         }
         case '/': {
+          const a = left as number;
+          const b = right as number;
           if (b === 0) return 0;
           if (Number.isInteger(a) && Number.isInteger(b)) return Math.floor(a / b);
           return a / b;
         }
         case '%': {
+          const a = left as number;
+          const b = right as number;
           if (Number.isInteger(a) && Number.isInteger(b)) return ((a % b) + b) % b;
           return a % b;
         }
@@ -2279,7 +2283,7 @@ class MrubyInterpreter {
         case 'push': case 'append': case '<<': obj.push(args[0] ?? null); return obj;
         case 'pop': return obj.pop() ?? null;
         case 'shift': return obj.shift() ?? null;
-        case 'unshift': obj.unshift(...(args.length > 0 ? args : [null])); return obj;
+        case 'unshift': if (args.length > 0) obj.unshift(...args); return obj;
         case 'clear': obj.splice(0, obj.length); return obj;
         case 'replace': {
           const other = args[0];
@@ -3337,16 +3341,20 @@ class MrubyInterpreter {
       if (a.length !== b.length) return false;
       return a.every((x, i) => this.rubyEquals(x, b[i]));
     }
-    if (a && b && typeof a === 'object' && '__type' in a && typeof b === 'object' && '__type' in b) {
+    if (
+      a !== null && b !== null &&
+      typeof a === 'object' && typeof b === 'object' &&
+      !Array.isArray(a) && !Array.isArray(b) &&
+      '__type' in a && '__type' in b &&
+      (a as MrubyHash).__type === 'hash' && (b as MrubyHash).__type === 'hash'
+    ) {
       const ha = a as MrubyHash;
       const hb = b as MrubyHash;
-      if (ha.__type === 'hash' && hb.__type === 'hash') {
-        if (ha.data.size !== hb.data.size) return false;
-        for (const [k, v] of ha.data) {
-          if (!hb.data.has(k) || !this.rubyEquals(v, hb.data.get(k)!)) return false;
-        }
-        return true;
+      if (ha.data.size !== hb.data.size) return false;
+      for (const [k, v] of ha.data) {
+        if (!hb.data.has(k) || !this.rubyEquals(v, hb.data.get(k)!)) return false;
       }
+      return true;
     }
     return false;
   }
