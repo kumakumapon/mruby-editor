@@ -11,6 +11,7 @@ export interface TraceEvent {
   line: number;
   vars: Record<string, string>;
   callStack: string[];
+  outputLength: number;
 }
 
 export function interpretMruby(code: string, inputLines: string[] = []): InterpreterResult {
@@ -161,7 +162,8 @@ class MrubyInterpreter {
         vars[`@${k}`] = this.inspect(v);
       }
     }
-    this.debugTrace.push({ line: lineNum, vars, callStack: [...this.callStackNames] });
+    const outputLength = this.output.reduce((sum, s) => sum + s.length, 0);
+    this.debugTrace.push({ line: lineNum, vars, callStack: [...this.callStackNames], outputLength });
   }
 
   private preprocessCode(code: string): string[] {

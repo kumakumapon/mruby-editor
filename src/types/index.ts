@@ -23,6 +23,7 @@ export interface TraceEvent {
   line: number;
   vars: Record<string, string>;
   callStack: string[];
+  outputLength: number;
 }
 
 export interface DebuggerState {
@@ -36,6 +37,9 @@ export interface DebuggerState {
   // Trace-based step debugger
   trace: TraceEvent[];
   traceIndex: number;
+  // Full execution output/error (for partial console display during debug)
+  fullOutput: string;
+  fullError?: string;
 }
 
 export interface ExecutionResult {
