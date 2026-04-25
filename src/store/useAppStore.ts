@@ -149,7 +149,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
     variables: new Map(),
     stepMode: null,
     trace: [],
-    traceIndex: -1
+    traceIndex: -1,
+    fullOutput: '',
+    fullError: undefined
   },
 
   toggleBreakpoint: (line) => {
@@ -186,7 +188,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         trace: [],
         traceIndex: -1,
         variables: new Map(),
-        callStack: []
+        callStack: [],
+        fullOutput: '',
+        fullError: undefined
       },
       isExecuting: true,
       consoleEntries: [],
@@ -213,7 +217,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
             ...state.debuggerState,
             isRunning: false,
             isPaused: false,
-            currentLine: -1
+            currentLine: -1,
+            fullOutput: result.output,
+            fullError: result.error
           },
           isExecuting: false,
           lastResult: {
@@ -223,6 +229,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
             executionTime
           }
         }));
+        if (result.output) {
+          get().addConsoleEntry({ type: 'log', message: result.output });
+        }
+        if (result.error) {
+          get().addConsoleEntry({ type: 'error', message: result.error });
+        }
         return;
       }
 
@@ -244,14 +256,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
             fileName: 'main.rb',
             line: firstEvent.line,
             column: 1
-          }))
+          })),
+          fullOutput: result.output,
+          fullError: result.error
         },
         isExecuting: false
       }));
 
-      // Show output in console
-      if (result.output) {
-        get().addConsoleEntry({ type: 'log', message: result.output });
+      // Show only the output produced up to the current trace position
+      const partialOutput = result.output.substring(0, firstEvent.outputLength);
+      if (partialOutput) {
+        get().addConsoleEntry({ type: 'log', message: partialOutput });
       }
       if (result.error) {
         get().addConsoleEntry({ type: 'error', message: result.error });
@@ -281,19 +296,21 @@ export const useAppStore = create<AppStore>((set, get) => ({
         traceIndex: -1,
         variables: new Map(),
         callStack: [],
-        stepMode: null
+        stepMode: null,
+        fullOutput: '',
+        fullError: undefined
       }
     }));
   },
 
   stepInto: () => {
     const state = get();
-    const { trace, traceIndex } = state.debuggerState;
+    const { trace, traceIndex, fullOutput, fullError } = state.debuggerState;
     if (!state.debuggerState.isPaused || trace.length === 0) return;
 
     const nextIdx = traceIndex + 1;
     if (nextIdx >= trace.length) {
-      // End of trace
+      // End of trace - show full output
       set((s) => ({
         debuggerState: {
           ...s.debuggerState,
@@ -301,13 +318,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
           isPaused: false,
           currentLine: -1,
           stepMode: null
-        }
+        },
+        consoleEntries: buildDebugConsoleEntries(fullOutput, fullError)
       }));
       return;
     }
 
     const event = trace[nextIdx];
     const vars = buildVariableMap(event);
+    const partialOutput = fullOutput.substring(0, event.outputLength);
     set((s) => ({
       debuggerState: {
         ...s.debuggerState,
@@ -321,14 +340,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
           column: 1
         })),
         stepMode: 'into'
-      }
+      },
+      consoleEntries: buildDebugConsoleEntries(partialOutput)
     }));
   },
 
   stepOver: () => {
     // Step over: advance to next line at same or outer call stack depth
     const state = get();
-    const { trace, traceIndex } = state.debuggerState;
+    const { trace, traceIndex, fullOutput, fullError } = state.debuggerState;
     if (!state.debuggerState.isPaused || trace.length === 0) return;
 
     const currentDepth = trace[traceIndex]?.callStack.length ?? 1;
@@ -338,6 +358,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
 
     if (nextIdx >= trace.length) {
+      // End of trace - show full output
       set((s) => ({
         debuggerState: {
           ...s.debuggerState,
@@ -345,13 +366,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
           isPaused: false,
           currentLine: -1,
           stepMode: null
-        }
+        },
+        consoleEntries: buildDebugConsoleEntries(fullOutput, fullError)
       }));
       return;
     }
 
     const event = trace[nextIdx];
     const vars = buildVariableMap(event);
+    const partialOutput = fullOutput.substring(0, event.outputLength);
     set((s) => ({
       debuggerState: {
         ...s.debuggerState,
@@ -365,13 +388,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
           column: 1
         })),
         stepMode: 'over'
-      }
+      },
+      consoleEntries: buildDebugConsoleEntries(partialOutput)
     }));
   },
 
   continueDebug: () => {
     const state = get();
-    const { trace, traceIndex, breakpoints } = state.debuggerState;
+    const { trace, traceIndex, breakpoints, fullOutput, fullError } = state.debuggerState;
     if (!state.debuggerState.isPaused || trace.length === 0) return;
 
     const bpLines = new Set(
@@ -387,7 +411,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
 
     if (nextIdx >= trace.length) {
-      // No more breakpoints - finished
+      // No more breakpoints - finished, show full output
       set((s) => ({
         debuggerState: {
           ...s.debuggerState,
@@ -395,13 +419,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
           isPaused: false,
           currentLine: -1,
           stepMode: null
-        }
+        },
+        consoleEntries: buildDebugConsoleEntries(fullOutput, fullError)
       }));
       return;
     }
 
     const event = trace[nextIdx];
     const vars = buildVariableMap(event);
+    const partialOutput = fullOutput.substring(0, event.outputLength);
     set((s) => ({
       debuggerState: {
         ...s.debuggerState,
@@ -415,7 +441,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
           column: 1
         })),
         stepMode: null
-      }
+      },
+      consoleEntries: buildDebugConsoleEntries(partialOutput)
     }));
   },
 
@@ -447,4 +474,27 @@ function buildVariableMap(event: TraceEvent): Map<string, Variable> {
     });
   }
   return vars;
+}
+
+function buildDebugConsoleEntries(output: string, error?: string): ConsoleEntry[] {
+  const entries: ConsoleEntry[] = [];
+  if (output) {
+    const id = ++consoleEntryCounter;
+    entries.push({
+      id: `debug-output-${id}`,
+      type: 'log',
+      message: output,
+      timestamp: new Date()
+    });
+  }
+  if (error) {
+    const id = ++consoleEntryCounter;
+    entries.push({
+      id: `debug-error-${id}`,
+      type: 'error',
+      message: error,
+      timestamp: new Date()
+    });
+  }
+  return entries;
 }

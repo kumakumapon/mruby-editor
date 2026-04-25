@@ -20,7 +20,9 @@ describe('useAppStore', () => {
         variables: new Map(),
         stepMode: null,
         trace: [],
-        traceIndex: -1
+        traceIndex: -1,
+        fullOutput: '',
+        fullError: undefined
       }
     });
   });
