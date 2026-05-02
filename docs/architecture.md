@@ -1,5 +1,10 @@
 # mruby WASM Editor — アーキテクチャドキュメント
 
+> ⚠️ **非公式プロジェクト / Unofficial Project**
+> このドキュメントおよびプロジェクトは非公式のものであり、mruby 公式プロジェクト・開発チームとは一切関係ありません。
+> This project is unofficial and is **not affiliated with, endorsed by, or associated with** the official mruby project.
+> 公式 mruby リポジトリ / Official mruby repository: <https://github.com/mruby/mruby>
+
 ## 目次
 
 1. [プロジェクト概要](#プロジェクト概要)
