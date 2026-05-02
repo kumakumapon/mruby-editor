@@ -1,5 +1,10 @@
 # mruby WASM Editor
 
+> ⚠️ **非公式プロジェクト / Unofficial Project**
+> このリポジトリは非公式のプロジェクトであり、mruby 公式プロジェクト・開発チームとは一切関係ありません。
+> This repository is an unofficial project and is **not affiliated with, endorsed by, or associated with** the official mruby project or its development team.
+> 公式 mruby リポジトリ / Official mruby repository: <https://github.com/mruby/mruby>
+
 A browser-based mruby code editor and step debugger hosted on GitHub Pages.
 
 🔗 **Live Demo**: [https://sj55576.github.io/mruby-editor/](https://sj55576.github.io/mruby-editor/)

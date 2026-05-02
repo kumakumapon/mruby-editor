@@ -122,6 +122,12 @@ export const App: React.FC = () => {
             <span className="px-2 py-0.5 bg-blue-600 rounded-full text-xs font-semibold whitespace-nowrap">
               v0.1.0
             </span>
+            <span
+              className="px-2 py-0.5 bg-amber-600 rounded-full text-xs font-semibold whitespace-nowrap"
+              title="このプロジェクトは非公式です。公式 mruby とは無関係です。/ This project is unofficial and not affiliated with the official mruby project."
+            >
+              非公式 / Unofficial
+            </span>
           </div>
 
           <div className="flex gap-2 flex-wrap">
