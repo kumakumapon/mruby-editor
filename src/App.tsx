@@ -117,7 +117,7 @@ export const App: React.FC = () => {
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-2 mr-auto">
             <h1 className="text-lg md:text-2xl font-bold text-white whitespace-nowrap">
-              mruby WASM Editor
+              Ruby Subset Editor
             </h1>
             <span className="px-2 py-0.5 bg-blue-600 rounded-full text-xs font-semibold whitespace-nowrap">
               v0.1.0

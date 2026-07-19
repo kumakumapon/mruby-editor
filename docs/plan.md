@@ -1,4 +1,10 @@
-# mruby WASM ビジュアルエディタ + デバッガ
+# 旧WASM構想（履歴資料）
+
+> **注意:** この文書は初期の検討資料であり、現行実装の仕様ではありません。
+> 現在の Ruby Subset Editor はWebAssemblyや公式mrubyランタイムを使用せず、
+> TypeScript製の独自Rubyサブセットインタープリタを使用しています。
+
+## 当初案: mruby WASM ビジュアルエディタ + デバッガ
 
 ## GitHub Pages デプロイプラン
 

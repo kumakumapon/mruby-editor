@@ -2309,7 +2309,6 @@ class MrubyInterpreter {
           return String(a).localeCompare(String(b));
         }); return obj;
         case 'uniq': return [...new Set(obj.map(x => JSON.stringify(x)))].map(x => JSON.parse(x) as MrubyValue);
-        case 'flatten': { const flatArr = obj as unknown[]; return flatArr.flat(Infinity) as MrubyValue[]; }
         case 'compact': return obj.filter(x => x !== null);
         case 'sum': return obj.reduce((acc, x) => (acc as number) + (typeof x === 'number' ? x : 0), args[0] ?? 0) as number;
         case 'min': return obj.reduce((min, x) => (x as number) < (min as number) ? x : min, obj[0]);
