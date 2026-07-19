@@ -1,4 +1,4 @@
-# mruby WASM Editor — アーキテクチャドキュメント
+# Ruby Subset Editor — アーキテクチャドキュメント
 
 > ⚠️ **非公式プロジェクト / Unofficial Project**
 > このドキュメントおよびプロジェクトは非公式のものであり、mruby 公式プロジェクト・開発チームとは一切関係ありません。
@@ -32,8 +32,8 @@
 
 ## プロジェクト概要
 
-**mruby WASM Editor** は、ブラウザ上で mruby (Ruby サブセット) コードをリアルタイムに実行・デバッグできる Web アプリケーションです。  
-TypeScript 製の独自インタープリタを内蔵しており、WASM なしでも Ruby の主要機能を実行できます。
+**Ruby Subset Editor** は、ブラウザ上で Ruby サブセットのコードをリアルタイムに実行・デバッグできる Web アプリケーションです。
+TypeScript 製の独自インタープリタを内蔵しています。WebAssembly、公式 mruby ランタイム、公式 Ruby ランタイムは使用しておらず、Ruby または mruby との完全な互換性を目的としたものではありません。
 
 | 技術スタック | 用途 |
 |---|---|
@@ -626,7 +626,7 @@ runtimeRef.current を返す
 
 ### mrubyInterpreter `utils/mrubyInterpreter.ts`
 
-TypeScript で実装された mruby (Ruby サブセット) インタープリタ本体です。
+TypeScript で実装された独自の Ruby サブセットインタープリタ本体です。
 
 #### アーキテクチャ概要
 

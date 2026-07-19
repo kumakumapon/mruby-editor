@@ -1,18 +1,22 @@
-# mruby WASM Editor
+# Ruby Subset Editor
 
 > ⚠️ **非公式プロジェクト / Unofficial Project**
 > このリポジトリは非公式のプロジェクトであり、mruby 公式プロジェクト・開発チームとは一切関係ありません。
 > This repository is an unofficial project and is **not affiliated with, endorsed by, or associated with** the official mruby project or its development team.
 > 公式 mruby リポジトリ / Official mruby repository: <https://github.com/mruby/mruby>
 
-A browser-based mruby code editor and step debugger hosted on GitHub Pages.
+A browser-based Ruby subset editor and step debugger hosted on GitHub Pages.
+
+This application uses an independent interpreter written in TypeScript. It does **not**
+use WebAssembly, the official mruby runtime, or the official Ruby runtime, and it is
+not intended to provide full Ruby or mruby compatibility.
 
 🔗 **Live Demo**: [https://sj55576.github.io/mruby-editor/](https://sj55576.github.io/mruby-editor/)
 
 ## Features
 
 - ✅ Monaco Editor with Ruby syntax highlighting and breakpoint gutter
-- ✅ TypeScript-based mruby interpreter (runs entirely in-browser)
+- ✅ Independent TypeScript-based Ruby subset interpreter (runs entirely in-browser)
 - ✅ Real-time code execution with execution time display
 - ✅ Console output panel with stdin input support (`gets` / `readline`)
 - ✅ Step debugger: breakpoints, step into, step over, continue
@@ -22,7 +26,7 @@ A browser-based mruby code editor and step debugger hosted on GitHub Pages.
 - ✅ No server required (fully static)
 - ✅ Offline capable
 
-## Supported mruby Features
+## Supported Ruby Subset Features
 
 ### Output
 - `puts`, `print`, `p`
@@ -117,7 +121,7 @@ A browser-based mruby code editor and step debugger hosted on GitHub Pages.
 
 ## Usage
 
-1. Write mruby code in the editor
+1. Write supported Ruby subset code in the editor
 2. Click **Run** to execute; output appears in the Console panel
 3. (Optional) Pre-type stdin lines in the Console before running code that calls `gets`
 4. Click **Debug** to start a step-debugging session:
