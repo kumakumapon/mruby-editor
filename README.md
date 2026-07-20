@@ -52,9 +52,11 @@ not intended to provide full Ruby or mruby compatibility.
 - `if / elsif / else / end`, `unless`
 - Inline modifiers: `puts x if condition`, `puts x unless condition`
 - `case / when / else / end`
+- Ternary operator: `cond ? a : b` (nestable, lazy evaluation)
 
 ### Loops & Iterators
-- `while`, `loop do...end`, `for var in iterable`
+- `while`, `until`, `loop do...end`, `for var in iterable`
+- Inline loop modifier: `stmt until condition`
 - `N.times`, `N.upto(M)`, `N.downto(M)`
 - `Array#each`, `Array#each_with_index`, `Array#each_with_object`
 - `break`, `next`, `return`; `break if`, `break unless`, `next if`, `next unless`
@@ -62,6 +64,7 @@ not intended to provide full Ruby or mruby compatibility.
 ### Methods
 - `def / end` with positional and default parameters
 - `return`; `super`
+- Blocks on top-level methods: `yield` / `yield(args)`, `block_given?` (both `do...end` and `{ ... }` forms)
 
 ### Classes
 - `class / end` with inheritance (`class B < A`)
