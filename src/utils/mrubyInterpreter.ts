@@ -111,6 +111,8 @@ class MrubyInterpreter {
   private iterationCount = 0;
   private inputLines: string[];
   private currentMethodStack: Array<{ className: string; methodName: string }> = [];
+  // Block passed to the currently executing user-defined method (null when called without a block)
+  private blockStack: Array<((params: MrubyValue[]) => MrubyValue) | null> = [];
 
   // Debug trace support
   private debugMode = false;
@@ -230,6 +232,11 @@ class MrubyInterpreter {
         continue;
       }
 
+      if (/^until\s+/.test(line)) {
+        i = this.executeUntil(lines, i, end, lineNumBase + (i - start));
+        continue;
+      }
+
       if (/^for\s+\w+\s+in\s+/.test(line)) {
         i = this.executeFor(lines, i, end, lineNumBase + (i - start));
         continue;
@@ -319,7 +326,8 @@ class MrubyInterpreter {
 
       // Multi-line do...end block (e.g., 5.times do |i|, arr.each do |x|)
       const doHeader = line.match(/^(.*?)\s+do(\s*\|[^|]*\|)?\s*$/);
-      if (doHeader && (doHeader[1].includes('.') || /^[\d(]/.test(doHeader[1]))) {
+      const bareDoCall = doHeader ? doHeader[1].match(/^(?:[a-zA-Z_@]\w*\s*=\s*)?([a-z_]\w*[?!]?)\s*(?:\(.*\))?$/) : null;
+      if (doHeader && (doHeader[1].includes('.') || /^[\d(]/.test(doHeader[1]) || (bareDoCall && this.methods.has(bareDoCall[1])))) {
         i = this.executeDoEndBlock(lines, i, end, lineNumBase + (i - start));
         continue;
       }
@@ -330,7 +338,7 @@ class MrubyInterpreter {
     return lastValue;
   }
 
-  private splitPostfixModifier(line: string): { stmt: string; modifier: 'if' | 'unless'; cond: string } | null {
+  private splitPostfixModifier(line: string): { stmt: string; modifier: 'if' | 'unless' | 'until'; cond: string } | null {
     let depth = 0, inStr = false, strChar = '';
     let lastPos = -1;
     let lastKeyword = '';
@@ -345,14 +353,15 @@ class MrubyInterpreter {
       if (depth === 0) {
         if (line.substring(i, i + 4) === ' if ') { lastPos = i; lastKeyword = 'if'; }
         else if (line.substring(i, i + 8) === ' unless ') { lastPos = i; lastKeyword = 'unless'; }
+        else if (line.substring(i, i + 7) === ' until ') { lastPos = i; lastKeyword = 'until'; }
       }
     }
 
     if (lastPos >= 0) {
-      const kwLen = lastKeyword === 'if' ? 4 : 8;
+      const kwLen = lastKeyword === 'if' ? 4 : lastKeyword === 'unless' ? 8 : 7;
       const stmt = line.substring(0, lastPos).trim();
       const cond = line.substring(lastPos + kwLen).trim();
-      if (stmt && cond) return { stmt, modifier: lastKeyword as 'if' | 'unless', cond };
+      if (stmt && cond) return { stmt, modifier: lastKeyword as 'if' | 'unless' | 'until', cond };
     }
     return null;
   }
@@ -374,7 +383,7 @@ class MrubyInterpreter {
 
     while (i < lines.length) {
       const l = lines[i].trim();
-      if (/^(if|unless|while|for|begin|def|class|case|loop)\b/.test(l)) {
+      if (/^(if|unless|while|until|for|begin|def|class|case|loop)\b/.test(l)) {
         depth++;
       } else if (/\bdo(\s*\|[^|]*\|)?\s*$/.test(l)) {
         depth++;
@@ -387,9 +396,12 @@ class MrubyInterpreter {
       i++;
     }
 
-    // Create runBlock function for multi-line body
+    // Create runBlock function for multi-line body. The block closes over the environment
+    // where it was written (definitionEnv), so `yield` inside a method body still sees the
+    // caller's variables rather than the method's locals.
+    const definitionEnv = this.env;
     const runBlock = (params: MrubyValue[]): MrubyValue => {
-      const blockEnv = new Environment(this.env);
+      const blockEnv = new Environment(definitionEnv);
       for (let pi = 0; pi < blockParams.length; pi++) {
         blockEnv.set(blockParams[pi], params[pi] ?? null);
       }
@@ -404,7 +416,7 @@ class MrubyInterpreter {
       }
       this.env = savedEnv;
       for (const [k, v] of blockEnv.getVars()) {
-        if (!blockParams.includes(k)) this.env.set(k, v);
+        if (!blockParams.includes(k)) definitionEnv.set(k, v);
       }
       return blockResult;
     };
@@ -420,7 +432,21 @@ class MrubyInterpreter {
 
     // Find object and method from call expression
     const dotPos = this.findLastDot(callExpr);
-    if (dotPos < 0) return i + 1;
+    if (dotPos < 0) {
+      // Receiverless call: a user-defined method taking a block (greet do |x| ... end)
+      const bareCall = callExpr.match(/^([a-z_]\w*[?!]?)\s*(?:\((.*)\))?$/);
+      if (bareCall && this.methods.has(bareCall[1])) {
+        const callArgs = bareCall[2] ? this.splitArgs(bareCall[2]).map(a => this.evalExpression(a)) : [];
+        let bareResult: MrubyValue = null;
+        try {
+          bareResult = this.executeMethod(this.methods.get(bareCall[1])!, callArgs, runBlock);
+        } catch (e) {
+          if (!(e instanceof BreakException)) throw e;
+        }
+        if (resultVar) this.env.set(resultVar, bareResult);
+      }
+      return i + 1;
+    }
 
     const objExpr = callExpr.substring(0, dotPos).trim();
     const methodPart = callExpr.substring(dotPos + 1).trim();
@@ -625,7 +651,7 @@ class MrubyInterpreter {
     let i = start + 1;
     while (i < lines.length && depth > 0) {
       const l = lines[i].trim();
-      if (/^(if|unless|while|for|begin|def|class|case|loop)\b/.test(l)) {
+      if (/^(if|unless|while|until|for|begin|def|class|case|loop)\b/.test(l)) {
         depth++;
       } else if (/\bdo(\s*\|[^|]*\|)?\s*$/.test(l)) {
         depth++;
@@ -705,7 +731,7 @@ class MrubyInterpreter {
 
     while (i < lines.length && depth > 0) {
       const l = lines[i].trim();
-      if (/^(if|unless|while|for|begin|def|class|case|loop)\b/.test(l)) {
+      if (/^(if|unless|while|until|for|begin|def|class|case|loop)\b/.test(l)) {
         depth++;
       } else if (/\bdo(\s*\|[^|]*\|)?\s*$/.test(l)) {
         depth++;
@@ -804,7 +830,7 @@ class MrubyInterpreter {
     let i = start + 1;
     while (i < end) {
       const l = lines[i].trim();
-      const isKeywordBlock = /^(if|unless|while|for|begin|def|class|case|loop)\b/.test(l);
+      const isKeywordBlock = /^(if|unless|while|until|for|begin|def|class|case|loop)\b/.test(l);
       const isDoEndStart = !isKeywordBlock && /\bdo(\s*\|[^|]*\|)?\s*$/.test(l);
       if (isKeywordBlock || isDoEndStart) {
         depth++;
@@ -865,7 +891,7 @@ class MrubyInterpreter {
     let i = start + 1;
     while (i < end) {
       const l = lines[i].trim();
-      if (/^(if|unless|while|for|begin|def|class|case|loop)\b/.test(l)) {
+      if (/^(if|unless|while|until|for|begin|def|class|case|loop)\b/.test(l)) {
         depth++;
       } else if (/\bdo(\s*\|[^|]*\|)?\s*$/.test(l)) {
         depth++;
@@ -897,6 +923,47 @@ class MrubyInterpreter {
     return i + 1;
   }
 
+  private executeUntil(lines: string[], start: number, end: number, startOrig: number = start): number {
+    const condStr = lines[start].trim().replace(/^until\s+/, '').trim().replace(/\s+do\s*$/, '');
+
+    const body: string[] = [];
+    let bodyLineBase = -1;
+    let depth = 1;
+    let i = start + 1;
+    while (i < end) {
+      const l = lines[i].trim();
+      if (/^(if|unless|while|until|for|begin|def|class|case|loop)\b/.test(l)) {
+        depth++;
+      } else if (/\bdo(\s*\|[^|]*\|)?\s*$/.test(l)) {
+        depth++;
+      }
+      if (/^end\b/.test(l)) {
+        depth--;
+        if (depth === 0) break;
+      }
+      if (bodyLineBase < 0 && l) bodyLineBase = startOrig + (i - start);
+      body.push(lines[i]);
+      i++;
+    }
+
+    let loopCount = 0;
+    while (!this.isTruthy(this.evalExpression(condStr))) {
+      loopCount++;
+      if (loopCount > this.maxIterations) {
+        throw new Error('Until loop exceeded maximum iterations');
+      }
+      try {
+        this.executeBlock(body, 0, body.length, bodyLineBase >= 0 ? bodyLineBase : 0);
+      } catch (e) {
+        if (e instanceof BreakException) break;
+        if (e instanceof NextException) continue;
+        throw e;
+      }
+    }
+
+    return i + 1;
+  }
+
   private executeFor(lines: string[], start: number, end: number, startOrig: number = start): number {
     const forLine = lines[start].trim();
     const match = forLine.match(/^for\s+(\w+)\s+in\s+(.+)$/);
@@ -911,7 +978,7 @@ class MrubyInterpreter {
     let i = start + 1;
     while (i < end) {
       const l = lines[i].trim();
-      if (/^(if|unless|while|for|begin|def|class|case|loop)\b/.test(l)) {
+      if (/^(if|unless|while|until|for|begin|def|class|case|loop)\b/.test(l)) {
         depth++;
       } else if (/\bdo(\s*\|[^|]*\|)?\s*$/.test(l)) {
         depth++;
@@ -961,7 +1028,7 @@ class MrubyInterpreter {
 
     while (i < end) {
       const l = lines[i].trim();
-      if (/^(begin|if|unless|while|for|def|class|case|loop)\b/.test(l)) {
+      if (/^(begin|if|unless|while|until|for|def|class|case|loop)\b/.test(l)) {
         depth++;
       } else if (/\bdo(\s*\|[^|]*\|)?\s*$/.test(l)) {
         depth++;
@@ -1042,7 +1109,7 @@ class MrubyInterpreter {
 
     while (i < end) {
       const l = lines[i].trim();
-      const isKeywordBlock = /^(if|unless|while|for|begin|def|class|case|loop)\b/.test(l);
+      const isKeywordBlock = /^(if|unless|while|until|for|begin|def|class|case|loop)\b/.test(l);
       const isDoEndStart = !isKeywordBlock && /\bdo(\s*\|[^|]*\|)?\s*$/.test(l);
       if (isKeywordBlock || isDoEndStart) {
         depth++;
@@ -1116,7 +1183,7 @@ class MrubyInterpreter {
 
     while (i < end) {
       const l = lines[i].trim();
-      if (/^(if|unless|while|for|begin|def|class|loop|case)\b/.test(l)) {
+      if (/^(if|unless|while|until|for|begin|def|class|loop|case)\b/.test(l)) {
         depth++;
       } else if (/\bdo(\s*\|[^|]*\|)?\s*$/.test(l)) {
         depth++;
@@ -1334,6 +1401,25 @@ class MrubyInterpreter {
     // Handle postfix if/unless modifiers (e.g., arr.push(x) if cond, puts "hi" unless cond)
     const postfixMod = this.splitPostfixModifier(line);
     if (postfixMod) {
+      if (postfixMod.modifier === 'until') {
+        // Postfix `until` is a loop modifier: run stmt repeatedly while cond is falsy
+        let lastResult: MrubyValue = null;
+        let loopCount = 0;
+        while (!this.isTruthy(this.evalExpression(postfixMod.cond))) {
+          loopCount++;
+          if (loopCount > this.maxIterations) {
+            throw new Error('Until loop exceeded maximum iterations');
+          }
+          try {
+            lastResult = this.evalStatement(postfixMod.stmt);
+          } catch (e) {
+            if (e instanceof BreakException) break;
+            if (e instanceof NextException) continue;
+            throw e;
+          }
+        }
+        return lastResult;
+      }
       const condOk = postfixMod.modifier === 'if'
         ? this.isTruthy(this.evalExpression(postfixMod.cond))
         : !this.isTruthy(this.evalExpression(postfixMod.cond));
@@ -1481,6 +1567,17 @@ class MrubyInterpreter {
     if (expr === 'true') return true;
     if (expr === 'false') return false;
 
+    // yield / yield(args) / yield args — invoke the block passed to the current method.
+    // Checked before operator splitting because `yield n * 2` means `yield(n * 2)` in Ruby.
+    const yieldMatch = expr.match(/^yield\b\s*(?:\((.*)\))?\s*$/) || expr.match(/^yield\s+(.+)$/);
+    if (yieldMatch) {
+      const currentBlock = this.blockStack[this.blockStack.length - 1];
+      if (!currentBlock) throw new RubyException('LocalJumpError: no block given (yield)');
+      const argsStr = (yieldMatch[1] || '').trim();
+      const yieldArgs = argsStr ? this.splitArgs(argsStr).map(a => this.evalExpression(a)) : [];
+      return currentBlock(yieldArgs);
+    }
+
     // Module constants (Math::PI, etc.)
     const colonMatch = expr.match(/^([A-Z]\w*)::(\w+)$/);
     if (colonMatch) {
@@ -1563,6 +1660,15 @@ class MrubyInterpreter {
         else if (!inStr && ch === ')') { depth--; if (depth === 0) { closePos = i; break; } }
       }
       if (closePos === expr.length - 1) return this.evalExpression(expr.slice(1, -1));
+    }
+
+    // Ternary operator (cond ? a : b) - lowest precedence, lazy evaluation of the chosen branch
+    const ternaryParts = this.splitTernary(expr);
+    if (ternaryParts) {
+      const [condPart, truePart, falsePart] = ternaryParts;
+      return this.isTruthy(this.evalExpression(condPart))
+        ? this.evalExpression(truePart)
+        : this.evalExpression(falsePart);
     }
 
     const orParts = this.splitBinary(expr, '||');
@@ -1812,6 +1918,52 @@ class MrubyInterpreter {
       return null;
     }
 
+    return null;
+  }
+
+  // Splits `cond ? a : b` into [cond, a, b], respecting string/paren/bracket nesting and
+  // avoiding false positives on method-name `?` suffixes (empty?, even?) and `:symbol` literals.
+  private splitTernary(expr: string): [string, string, string] | null {
+    let depth = 0, inStr = false, strChar = '';
+    let qPos = -1;
+
+    for (let i = 0; i < expr.length; i++) {
+      const ch = expr[i];
+      if (!inStr && (ch === '"' || ch === "'")) { inStr = true; strChar = ch; continue; }
+      if (inStr && ch === strChar && (i === 0 || expr[i - 1] !== '\\')) { inStr = false; continue; }
+      if (inStr) continue;
+      if (ch === '(' || ch === '[' || ch === '{') { depth++; continue; }
+      if (ch === ')' || ch === ']' || ch === '}') { depth--; continue; }
+      if (depth === 0 && ch === '?') {
+        const prev = i > 0 ? expr[i - 1] : '';
+        if (/[A-Za-z0-9_]/.test(prev)) continue; // method-name suffix, e.g. empty?, even?
+        qPos = i;
+        break;
+      }
+    }
+    if (qPos < 0) return null;
+
+    depth = 0; inStr = false; strChar = '';
+    for (let i = qPos + 1; i < expr.length; i++) {
+      const ch = expr[i];
+      if (!inStr && (ch === '"' || ch === "'")) { inStr = true; strChar = ch; continue; }
+      if (inStr && ch === strChar && (i === 0 || expr[i - 1] !== '\\')) { inStr = false; continue; }
+      if (inStr) continue;
+      if (ch === '(' || ch === '[' || ch === '{') { depth++; continue; }
+      if (ch === ')' || ch === ']' || ch === '}') { depth--; continue; }
+      if (depth === 0 && ch === ':') {
+        if (expr[i + 1] === ':') { i++; continue; } // module scope `::`
+        const prevCh = i > 0 ? expr[i - 1] : '';
+        const nextCh = i + 1 < expr.length ? expr[i + 1] : '';
+        const looksLikeSymbol = /[A-Za-z_]/.test(nextCh) && !/[A-Za-z0-9_]/.test(prevCh);
+        if (looksLikeSymbol) continue; // e.g. `:foo` symbol literal, not the separator colon
+        const cond = expr.slice(0, qPos).trim();
+        const truePart = expr.slice(qPos + 1, i).trim();
+        const falsePart = expr.slice(i + 1).trim();
+        if (cond && truePart && falsePart) return [cond, truePart, falsePart];
+        return null;
+      }
+    }
     return null;
   }
 
@@ -2634,6 +2786,38 @@ class MrubyInterpreter {
           }
         }
       }
+      // Receiverless call: user-defined method taking a brace block (greet { |x| ... })
+      const bareCall = receiverAndMethod.match(/^([a-z_]\w*[?!]?)\s*(?:\((.*)\))?$/);
+      if (bareCall && this.methods.has(bareCall[1])) {
+        const definitionEnv = this.env;
+        const braceBlock = (params: MrubyValue[]): MrubyValue => {
+          const blockEnv = new Environment(definitionEnv);
+          for (let pi = 0; pi < blockParams.length; pi++) {
+            blockEnv.set(blockParams[pi], params[pi] ?? null);
+          }
+          const savedEnv = this.env;
+          this.env = blockEnv;
+          let blockResult: MrubyValue = null;
+          try {
+            blockResult = runBodyStatements();
+          } catch (e) {
+            this.env = savedEnv;
+            throw e;
+          }
+          this.env = savedEnv;
+          for (const [k, v] of blockEnv.getVars()) {
+            if (!blockParams.includes(k)) definitionEnv.set(k, v);
+          }
+          return blockResult;
+        };
+        const callArgs = bareCall[2] ? this.splitArgs(bareCall[2]).map(a => this.evalExpression(a)) : [];
+        try {
+          return this.executeMethod(this.methods.get(bareCall[1])!, callArgs, braceBlock);
+        } catch (e) {
+          if (e instanceof BreakException) return null;
+          throw e;
+        }
+      }
       return undefined;
     }
 
@@ -3178,7 +3362,7 @@ class MrubyInterpreter {
         const frame = this.currentMethodStack[this.currentMethodStack.length - 1];
         return frame ? frame.methodName : null;
       }
-      case 'block_given?': return false;
+      case 'block_given?': return this.blockStack.length > 0 && this.blockStack[this.blockStack.length - 1] !== null;
       case 'object_id': return Math.floor(Math.random() * 1000000);
       case 'frozen?': return false;
       case 'nil?': {
@@ -3205,7 +3389,7 @@ class MrubyInterpreter {
     return null;
   }
 
-  private executeMethod(method: MrubyMethod, args: MrubyValue[]): MrubyValue {
+  private executeMethod(method: MrubyMethod, args: MrubyValue[], block: ((params: MrubyValue[]) => MrubyValue) | null = null): MrubyValue {
     const methodEnv = new Environment(this.env);
     for (let i = 0; i < method.params.length; i++) {
       let paramName = method.params[i];
@@ -3221,6 +3405,7 @@ class MrubyInterpreter {
     const savedEnv = this.env;
     this.env = methodEnv;
     this.callStackNames.push(method.name);
+    this.blockStack.push(block);
     let result: MrubyValue = null;
 
     try {
@@ -3229,12 +3414,14 @@ class MrubyInterpreter {
       if (e instanceof ReturnException) {
         result = e.value;
       } else {
+        this.blockStack.pop();
         this.callStackNames.pop();
         this.env = savedEnv;
         throw e;
       }
     }
 
+    this.blockStack.pop();
     this.callStackNames.pop();
     this.env = savedEnv;
     return result;

@@ -344,4 +344,117 @@ describe('new mruby features', () => {
     const result = interpretMruby('line = gets\nputs line.chomp', ['hello']);
     expect(result.output).toBe('hello\n');
   });
+
+  it('should handle until loops (counting)', () => {
+    const result = interpretMruby('i = 0\nuntil i >= 3\n  puts i\n  i += 1\nend');
+    expect(result.output).toBe('0\n1\n2\n');
+  });
+
+  it('should handle until loop with break', () => {
+    const result = interpretMruby('i = 0\nuntil i >= 10\n  break if i == 3\n  puts i\n  i += 1\nend');
+    expect(result.output).toBe('0\n1\n2\n');
+  });
+
+  it('should handle until loop with next', () => {
+    const result = interpretMruby('i = 0\nuntil i >= 5\n  i += 1\n  next if i == 3\n  puts i\nend');
+    expect(result.output).toBe('1\n2\n4\n5\n');
+  });
+
+  it('should handle inline until modifier', () => {
+    const result = interpretMruby('i = 0\ni += 1 until i >= 3\nputs i');
+    expect(result.output).toBe('3\n');
+  });
+
+  it('should handle basic ternary operator', () => {
+    const result = interpretMruby('x = 5\nputs x > 3 ? "big" : "small"');
+    expect(result.output).toBe('big\n');
+  });
+
+  it('should handle ternary with method-call condition', () => {
+    const result = interpretMruby('n = 4\nputs n.even? ? "yes" : "no"');
+    expect(result.output).toBe('yes\n');
+  });
+
+  it('should handle ternary with falsy method-call condition', () => {
+    const result = interpretMruby('n = 3\nputs n.even? ? "yes" : "no"');
+    expect(result.output).toBe('no\n');
+  });
+
+  it('should handle nested ternary operator', () => {
+    const code = 'def classify(n)\n  n > 0 ? "positive" : n == 0 ? "zero" : "negative"\nend\nputs classify(5)\nputs classify(0)\nputs classify(-5)';
+    const result = interpretMruby(code);
+    expect(result.output).toBe('positive\nzero\nnegative\n');
+  });
+
+  it('should handle ternary inside string interpolation', () => {
+    const result = interpretMruby('n = 2\nputs "Result: #{n > 0 ? \'positive\' : \'negative\'}"');
+    expect(result.output).toBe('Result: positive\n');
+  });
+
+  it('should not confuse ternary with symbols and hash literals', () => {
+    const result = interpretMruby('h = { a: 1, b: 2 }\nputs h[:a]\nputs h[:b]');
+    expect(result.output).toBe('1\n2\n');
+  });
+
+  it('should not confuse ternary with symbol-only expressions', () => {
+    const result = interpretMruby('x = true\nputs x ? :yes : :no');
+    expect(result.output).toBe('yes\n');
+  });
+
+  it('should evaluate only the chosen ternary branch lazily', () => {
+    const code = 'def boom\n  raise "should not be called"\nend\nx = true\nputs x ? "ok" : boom';
+    const result = interpretMruby(code);
+    expect(result.output).toBe('ok\n');
+    expect(result.error).toBeUndefined();
+  });
+});
+
+describe('yield and block_given?', () => {
+  it('should yield to a do...end block', () => {
+    const code = 'def greet\n  yield\n  yield\nend\ngreet do\n  puts "hi"\nend';
+    const result = interpretMruby(code);
+    expect(result.output).toBe('hi\nhi\n');
+  });
+
+  it('should yield with arguments to block params', () => {
+    const code = 'def twice(n)\n  yield(n)\n  yield n * 2\nend\ntwice(3) do |x|\n  puts x\nend';
+    const result = interpretMruby(code);
+    expect(result.output).toBe('3\n6\n');
+  });
+
+  it('should use the yield return value', () => {
+    const code = 'def apply(n)\n  result = yield(n)\n  puts result\nend\napply(5) do |x|\n  x + 1\nend';
+    const result = interpretMruby(code);
+    expect(result.output).toBe('6\n');
+  });
+
+  it('should yield to a brace block', () => {
+    const code = 'def run\n  yield(10)\nend\nrun { |x| puts x }';
+    const result = interpretMruby(code);
+    expect(result.output).toBe('10\n');
+  });
+
+  it('should report block_given? correctly', () => {
+    const code = 'def check\n  if block_given?\n    yield\n  else\n    puts "no block"\n  end\nend\ncheck\ncheck do\n  puts "got block"\nend';
+    const result = interpretMruby(code);
+    expect(result.output).toBe('no block\ngot block\n');
+  });
+
+  it('should raise LocalJumpError when yield has no block', () => {
+    const code = 'def nope\n  yield\nend\nnope';
+    const result = interpretMruby(code);
+    expect(result.error).toContain('no block given');
+  });
+
+  it('should let blocks see caller variables (closure)', () => {
+    const code = 'def call_it\n  yield\nend\ntotal = 0\ncall_it do\n  total += 5\nend\nputs total';
+    const result = interpretMruby(code);
+    expect(result.output).toBe('5\n');
+  });
+
+  it('should assign the method result of a block call', () => {
+    const code = 'def compute\n  yield(2) + 1\nend\nr = compute do |x|\n  x * 10\nend\nputs r';
+    const result = interpretMruby(code);
+    expect(result.output).toBe('21\n');
+  });
 });
