@@ -11,7 +11,7 @@ This application uses an independent interpreter written in TypeScript. It does 
 use WebAssembly, the official mruby runtime, or the official Ruby runtime, and it is
 not intended to provide full Ruby or mruby compatibility.
 
-🔗 **Live Demo**: [https://sj55576.github.io/mruby-editor/](https://sj55576.github.io/mruby-editor/)
+🔗 **Live Demo**: [https://kumakumapon.github.io/mruby-editor/](https://kumakumapon.github.io/mruby-editor/)
 
 ## Features
 
